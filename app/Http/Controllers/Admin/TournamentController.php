@@ -358,6 +358,49 @@ class TournamentController extends Controller
     }
 
     /**
+     * Update an existing pitch attached to a tournament.
+     */
+    public function updatePitch(Request $request, Pitch $pitch): RedirectResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'location' => ['nullable', 'string', 'max:255'],
+            'sort_order' => ['required', 'integer', 'min:1'],
+        ]);
+
+        $pitch->update([
+            'name' => $validated['name'],
+            'location' => $this->normalizeNullableString($validated['location'] ?? null),
+            'sort_order' => $validated['sort_order'],
+        ]);
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $pitch->tournament_id),
+            )
+            ->with('status', 'pitch-updated');
+    }
+
+    /**
+     * Delete an existing pitch from a tournament. Matches that referenced
+     * the pitch keep their schedule but lose the pitch assignment.
+     */
+    public function destroyPitch(Request $request, Pitch $pitch): RedirectResponse
+    {
+        $tournamentId = $pitch->tournament_id;
+
+        $pitch->delete();
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournamentId),
+            )
+            ->with('status', 'pitch-deleted');
+    }
+
+    /**
      * Register one or more existing teams into a selected tournament.
      *
      * Accepts either a single `team_id` (legacy modal flow) or an array of
@@ -879,6 +922,84 @@ class TournamentController extends Controller
                 $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
             )
             ->with('status', 'match-created');
+    }
+
+    /**
+     * Update an existing tournament match. Used by the manual round robin
+     * setup flow so admins can adjust teams, pitch, schedule, and round
+     * label per match without regenerating the whole bracket.
+     */
+    public function updateMatch(Request $request, TournamentMatch $match): RedirectResponse
+    {
+        $tournamentId = $match->tournament_id;
+
+        $validator = Validator::make($request->all(), [
+            'pitch_id' => ['nullable', 'integer', 'exists:pitches,id'],
+            'home_registration_id' => ['required', 'integer', 'exists:tournament_registrations,id'],
+            'away_registration_id' => ['required', 'integer', 'different:home_registration_id', 'exists:tournament_registrations,id'],
+            'round_label' => ['nullable', 'string', 'max:255'],
+            'match_number' => ['nullable', 'integer', 'min:1', 'max:9999'],
+            'scheduled_at' => ['nullable', 'date'],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $tournamentId): void {
+            if ($request->filled('pitch_id')
+                && ! Pitch::query()
+                    ->whereKey($request->integer('pitch_id'))
+                    ->where('tournament_id', $tournamentId)
+                    ->exists()
+            ) {
+                $validator->errors()->add('pitch_id', 'The selected pitch does not belong to this tournament.');
+            }
+
+            foreach (['home_registration_id', 'away_registration_id'] as $field) {
+                if (! TournamentRegistration::query()
+                    ->whereKey($request->integer($field))
+                    ->where('tournament_id', $tournamentId)
+                    ->exists()
+                ) {
+                    $validator->errors()->add($field, 'The selected team registration does not belong to this tournament.');
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        $match->update([
+            'pitch_id' => $validated['pitch_id'] ?? null,
+            'home_registration_id' => $validated['home_registration_id'],
+            'away_registration_id' => $validated['away_registration_id'],
+            'round_label' => $this->normalizeNullableString($validated['round_label'] ?? null),
+            'match_number' => $validated['match_number'] ?? null,
+            'scheduled_at' => $validated['scheduled_at'] ?? null,
+        ]);
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournamentId),
+            )
+            ->with('status', 'match-updated');
+    }
+
+    /**
+     * Delete a tournament match. Cascades to score logs and player stats
+     * via the underlying schema relationships.
+     */
+    public function destroyMatch(Request $request, TournamentMatch $match): RedirectResponse
+    {
+        $tournamentId = $match->tournament_id;
+
+        DB::transaction(function () use ($match): void {
+            $match->delete();
+        });
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournamentId),
+            )
+            ->with('status', 'match-deleted');
     }
 
     /**

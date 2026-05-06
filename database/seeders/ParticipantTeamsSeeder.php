@@ -206,6 +206,3 @@ class ParticipantTeamsSeeder extends Seeder
         ]);
     }
 }
-// diri sa http://distrack.test/admin/tournaments?tournament=2&tab=round-robin
-
-// include diri sa pitches like mag add ug pitch ayha dayon mag round robin

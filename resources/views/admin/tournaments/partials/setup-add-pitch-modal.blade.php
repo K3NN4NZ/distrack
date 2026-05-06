@@ -1,3 +1,6 @@
+@php
+    $pitchModalRedirectTab = $redirectTab ?? 'pitches';
+@endphp
 <flux:modal
     name="setup-add-pitch-modal-{{ $tournament->id }}"
     :show="$show"
@@ -24,7 +27,7 @@
             <input type="hidden" name="tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="pitch_tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-            <input type="hidden" name="redirect_tab" value="pitches">
+            <input type="hidden" name="redirect_tab" value="{{ $pitchModalRedirectTab }}">
 
             <flux:input name="name" :label="__('Pitch Name')" :value="old('name')" type="text" required />
             <flux:input name="location" :label="__('Location')" :value="old('location')" type="text" />

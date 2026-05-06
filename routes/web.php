@@ -65,11 +65,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::put('/{tournament}', 'updateTournament')->name('update');
                 Route::delete('/{tournament}', 'destroyTournament')->name('destroy');
                 Route::post('/pitches', 'storePitch')->name('pitches.store');
+                Route::put('/pitches/{pitch}', 'updatePitch')->name('pitches.update');
+                Route::delete('/pitches/{pitch}', 'destroyPitch')->name('pitches.destroy');
                 Route::post('/registrations/seed', 'seedRegistrations')->name('registrations.seed');
                 Route::patch('/registrations/seeding', 'updateRegistrationSeeding')->name('registrations.seeding.update');
                 Route::post('/registrations', 'storeRegistration')->name('registrations.store');
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
                 Route::post('/matches', 'storeMatch')->name('matches.store');
+                Route::put('/matches/{match}', 'updateMatch')->name('matches.update');
+                Route::delete('/matches/{match}', 'destroyMatch')->name('matches.destroy');
                 Route::post('/crews', 'storeCrew')->name('crews.store');
             });
         });
