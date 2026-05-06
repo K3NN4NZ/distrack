@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Admin\TournamentController as AdminTournamentController;
 use App\Models\MatchPlayerStat;
 use App\Models\MatchScoreLog;
 use App\Models\Pitch;
@@ -120,16 +121,871 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
         ->assertOk()
         ->assertSee('Tournament Setup Workspace')
-        ->assertSee('Overview')
-        ->assertSee('Basic Info')
-        ->assertSee('Teams')
-        ->assertSee('Pitches')
-        ->assertSee('Format')
-        ->assertSee('Matches')
-        ->assertSee('Crew')
-        ->assertSee('Publish & Preview')
-        ->assertSee('Quick Actions')
-        ->assertSee('Readiness Checklist');
+        ->assertSee('Seeding')
+        ->assertSee('Round Robin')
+        ->assertSee('Bracket Ranking')
+        ->assertSee('Crossover')
+        ->assertSee('Pooling')
+        ->assertSee('Quarter Final')
+        ->assertSee('Semi Finals')
+        ->assertSee('Championship')
+        ->assertSee('Auto Seed')
+        ->assertDontSee('Save Manual Seeding')
+        ->assertDontSee('Manual Team Assignment')
+        ->assertDontSee('Quick Actions')
+        ->assertDontSee('Readiness Checklist')
+        ->assertDontSee('Tournament Summary');
+});
+
+test('round robin tab no longer shows the tournament profile form', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Round Robin Only Cup',
+        'slug' => 'round-robin-only-cup',
+        'venue' => 'Main Grounds',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertOk()
+        ->assertSee('Round Robin')
+        ->assertDontSee('Tournament Profile')
+        ->assertDontSee('Save Tournament Changes');
+});
+
+test('legacy basic info tab links redirect to the round robin tab', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Legacy Tab Alias Cup',
+        'slug' => 'legacy-tab-alias-cup',
+        'venue' => 'Main Grounds',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'basic-info']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']));
+});
+
+test('overview shows seeded team names inside current bracket cards', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Summary Cup',
+        'slug' => 'bracket-summary-cup',
+        'venue' => 'Main Grounds',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Bracket Summary Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+            'seed_number' => $number,
+            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertOk()
+        ->assertSee('Current Brackets')
+        ->assertSee('Randomize current brackets')
+        ->assertSee('1 - Bracket Summary Team 1')
+        ->assertSee('5 - Bracket Summary Team 5')
+        ->assertSee('6 - Bracket Summary Team 6')
+        ->assertSee('10 - Bracket Summary Team 10');
+});
+
+test('admin users can auto seed 8 teams without creating brackets', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Composer Cup',
+        'slug' => 'bracket-composer-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 8) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Seed Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.registrations.seed'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'registrations-seeded');
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('seed_number')
+        ->get();
+
+    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect($registrations->pluck('bracket_code')->filter()->all())->toBe([]);
+    expect($registrations->pluck('bracket_rank')->filter()->all())->toBe([]);
+    expect($registrations->pluck('pool_name')->filter()->all())->toBe([]);
+});
+
+test('admin users can auto seed 10 teams into two random 5-team brackets', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Overflow Seeding Cup',
+        'slug' => 'overflow-seeding-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 10) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Overflow Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.registrations.seed'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'registrations-seeded');
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('seed_number')
+        ->get();
+
+    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect($registrations->pluck('bracket_code')->filter()->count())->toBe(10);
+    expect($registrations->where('bracket_code', 'Bracket A')->count())->toBe(5);
+    expect($registrations->where('bracket_code', 'Bracket B')->count())->toBe(5);
+});
+
+test('admin users can auto seed teams through json for in-place bracket refreshes', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Async Seeding Cup',
+        'slug' => 'async-seeding-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 10) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Async Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $response = $this->postJson(route('admin.tournaments.registrations.seed'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+    ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('status', 'registrations-seeded')
+        ->assertJsonPath('message', 'Teams seeded successfully. Brackets now use 5 teams each, and extra teams remain unassigned.')
+        ->assertJsonStructure(['overview_html']);
+
+    expect($response->json('overview_html'))->toContain('Current Brackets');
+    expect($response->json('overview_html'))->toContain('Randomize current brackets');
+});
+
+test('admin users can generate round robin matches from the current brackets using two pitches', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Round Robin Sample Cup',
+        'slug' => 'round-robin-sample-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $pitchOne = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Pitch 1',
+        'location' => 'North Field',
+        'sort_order' => 1,
+        'is_active' => true,
+    ]);
+
+    $pitchTwo = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Pitch 2',
+        'location' => 'South Field',
+        'sort_order' => 2,
+        'is_active' => true,
+    ]);
+
+    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
+        ->map(function (int $number) use ($teamOwner, $tournament) {
+            $team = Team::query()->create([
+                'owner_user_id' => $teamOwner->id,
+                'name' => 'Round Robin Team '.$number,
+                'address' => 'Valencia City',
+                'status' => 'active',
+            ]);
+
+            return TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'pending',
+                'seed_number' => $number,
+                'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+            ]);
+        });
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.round-robin.generate'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'round-robin-generated');
+
+    $matches = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->orderBy('match_number')
+        ->get();
+
+    expect($matches)->toHaveCount(20);
+    expect($matches->pluck('pitch_id')->unique()->sort()->values()->all())
+        ->toBe([$pitchOne->id, $pitchTwo->id]);
+
+    $bracketAIds = $registrations->take(AdminTournamentController::BRACKET_TEAM_LIMIT)->pluck('id');
+    $bracketBIds = $registrations->slice(AdminTournamentController::BRACKET_TEAM_LIMIT)->pluck('id');
+
+    $bracketAPairs = $matches
+        ->filter(fn (TournamentMatch $match): bool => $bracketAIds->contains($match->home_registration_id) && $bracketAIds->contains($match->away_registration_id))
+        ->map(fn (TournamentMatch $match): string => collect([$match->home_registration_id, $match->away_registration_id])->sort()->implode('-'))
+        ->unique()
+        ->values();
+
+    $bracketBPairs = $matches
+        ->filter(fn (TournamentMatch $match): bool => $bracketBIds->contains($match->home_registration_id) && $bracketBIds->contains($match->away_registration_id))
+        ->map(fn (TournamentMatch $match): string => collect([$match->home_registration_id, $match->away_registration_id])->sort()->implode('-'))
+        ->unique()
+        ->values();
+
+    expect($bracketAPairs)->toHaveCount(10);
+    expect($bracketBPairs)->toHaveCount(10);
+});
+
+test('round robin generation refreshes existing round robin matches instead of duplicating them', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Round Robin Refresh Cup',
+        'slug' => 'round-robin-refresh-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 2) as $number) {
+        Pitch::query()->create([
+            'tournament_id' => $tournament->id,
+            'name' => 'Refresh Pitch '.$number,
+            'location' => 'Field '.$number,
+            'sort_order' => $number,
+            'is_active' => true,
+        ]);
+    }
+
+    foreach (range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Refresh Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+            'seed_number' => $number,
+            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $payload = [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ];
+
+    $this->post(route('admin.tournaments.matches.round-robin.generate'), $payload);
+    $this->post(route('admin.tournaments.matches.round-robin.generate'), $payload);
+
+    expect(TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->count())->toBe(20);
+});
+
+test('round robin generation requires at least one pitch', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Round Robin Pitchless Cup',
+        'slug' => 'round-robin-pitchless-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Pitchless Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+            'seed_number' => $number,
+            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->post(route('admin.tournaments.matches.round-robin.generate'), [
+            'tournament_id' => $tournament->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'round-robin',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHasErrors(['round_robin']);
+
+    expect(TournamentMatch::query()->where('tournament_id', $tournament->id)->count())->toBe(0);
+});
+
+test('admin auto seeding leaves extra teams unassigned after full 5-team brackets are formed', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Overflow Seeding Cup',
+        'slug' => 'overflow-seeding-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 11) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Overflow Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.registrations.seed'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'registrations-seeded');
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('seed_number')
+        ->get();
+
+    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect($registrations->take(10)->where('bracket_code', 'Bracket A')->count())->toBe(5);
+    expect($registrations->take(10)->where('bracket_code', 'Bracket B')->count())->toBe(5);
+    expect($registrations->last()->bracket_code)->toBeNull();
+});
+
+test('admin users can manually update seeding metadata per team', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Manual Seeding Cup',
+        'slug' => 'manual-seeding-cup',
+        'venue' => 'Field House',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
+        ->map(function (int $number) use ($teamOwner, $tournament) {
+            $team = Team::query()->create([
+                'owner_user_id' => $teamOwner->id,
+                'name' => 'Manual Team '.$number,
+                'address' => 'Valencia City',
+                'status' => 'active',
+            ]);
+
+            return TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'pending',
+            ]);
+        });
+
+    $this->actingAs($admin);
+
+    $this->patch(route('admin.tournaments.registrations.seeding.update'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+        'registrations' => $registrations->values()->map(function (TournamentRegistration $registration, int $index): array {
+            return [
+                'id' => $registration->id,
+                'seed_number' => $index + 1,
+                'bracket_code' => $index < AdminTournamentController::BRACKET_TEAM_LIMIT ? 'A' : 'Bracket B',
+            ];
+        })->all(),
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'registrations-seeding-updated');
+
+    $firstRegistration = $registrations->first()->fresh();
+    $lastRegistration = $registrations->last()->fresh();
+
+    expect($firstRegistration->seed_number)->toBe(1);
+    expect($firstRegistration->bracket_code)->toBe('Bracket A');
+    expect($firstRegistration->bracket_rank)->toBeNull();
+
+    expect($lastRegistration->seed_number)->toBe(AdminTournamentController::BRACKET_TEAM_LIMIT * 2);
+    expect($lastRegistration->bracket_code)->toBe('Bracket B');
+    expect($lastRegistration->bracket_rank)->toBeNull();
+});
+
+test('admin users can update seed order for one bracket without resubmitting every team', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Modal Edit Cup',
+        'slug' => 'bracket-modal-edit-cup',
+        'venue' => 'Field House',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
+        ->map(function (int $number) use ($teamOwner, $tournament) {
+            $team = Team::query()->create([
+                'owner_user_id' => $teamOwner->id,
+                'name' => 'Bracket Modal Team '.$number,
+                'address' => 'Valencia City',
+                'status' => 'active',
+            ]);
+
+            return TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'pending',
+                'seed_number' => $number,
+                'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+            ]);
+        });
+
+    $this->actingAs($admin);
+
+    $bracketARegistrations = $registrations->take(AdminTournamentController::BRACKET_TEAM_LIMIT)->values();
+
+    $this->patch(route('admin.tournaments.registrations.seeding.update'), [
+        'tournament_id' => $tournament->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'overview',
+        'seed_order_bracket_code' => 'Bracket A',
+        'registrations' => $bracketARegistrations->map(function (TournamentRegistration $registration, int $index): array {
+            return [
+                'id' => $registration->id,
+                'seed_number' => AdminTournamentController::BRACKET_TEAM_LIMIT - $index,
+                'bracket_code' => 'Bracket A',
+            ];
+        })->all(),
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'registrations-seeding-updated');
+
+    expect($bracketARegistrations->map(fn (TournamentRegistration $registration) => $registration->fresh()->seed_number)->all())
+        ->toBe([5, 4, 3, 2, 1]);
+
+    expect($registrations->slice(AdminTournamentController::BRACKET_TEAM_LIMIT)->values()->map(fn (TournamentRegistration $registration) => $registration->fresh()->seed_number)->all())
+        ->toBe([6, 7, 8, 9, 10]);
+});
+
+test('admin users cannot reuse a seed number that already belongs to another unsubmitted team', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Seed Conflict Cup',
+        'slug' => 'bracket-seed-conflict-cup',
+        'venue' => 'Field House',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
+        ->map(function (int $number) use ($teamOwner, $tournament) {
+            $team = Team::query()->create([
+                'owner_user_id' => $teamOwner->id,
+                'name' => 'Bracket Conflict Team '.$number,
+                'address' => 'Valencia City',
+                'status' => 'active',
+            ]);
+
+            return TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'pending',
+                'seed_number' => $number,
+                'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+            ]);
+        });
+
+    $this->actingAs($admin);
+
+    $response = $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->patch(route('admin.tournaments.registrations.seeding.update'), [
+            'tournament_id' => $tournament->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'overview',
+            'seed_order_bracket_code' => 'Bracket A',
+            'registrations' => $registrations->take(AdminTournamentController::BRACKET_TEAM_LIMIT)->values()->map(function (TournamentRegistration $registration, int $index): array {
+                return [
+                    'id' => $registration->id,
+                    'seed_number' => $index === 0 ? 6 : $registration->seed_number,
+                    'bracket_code' => 'Bracket A',
+                ];
+            })->all(),
+        ]);
+
+    $response
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHasErrors([
+            'registrations',
+            'registrations.0.seed_number',
+        ]);
+
+    expect($registrations->first()->fresh()->seed_number)->toBe(1);
+});
+
+test('admin users cannot assign more than 5 teams to one bracket during manual seeding', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Limit Cup',
+        'slug' => 'bracket-limit-cup',
+        'venue' => 'City Oval',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, 10))->map(function (int $number) use ($teamOwner, $tournament) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Limit Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        return TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    });
+
+    $this->actingAs($admin);
+
+    $response = $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->patch(route('admin.tournaments.registrations.seeding.update'), [
+            'tournament_id' => $tournament->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'overview',
+            'registrations' => $registrations->values()->map(fn (TournamentRegistration $registration, int $index): array => [
+                'id' => $registration->id,
+                'seed_number' => $index + 1,
+                'bracket_code' => $index < (AdminTournamentController::BRACKET_TEAM_LIMIT + 1) ? 'A' : 'B',
+            ])->all(),
+        ]);
+
+    $response
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHasErrors([
+            'registrations',
+            'registrations.0.bracket_code',
+            'registrations.6.bracket_code',
+        ]);
+
+    expect(TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->whereNotNull('bracket_code')
+        ->count())->toBe(0);
+});
+
+test('admin users cannot save incomplete manual brackets', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Incomplete Bracket Cup',
+        'slug' => 'incomplete-bracket-cup',
+        'venue' => 'City Oval',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, 10))->map(function (int $number) use ($teamOwner, $tournament) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Incomplete Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        return TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    });
+
+    $this->actingAs($admin);
+
+    $response = $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->patch(route('admin.tournaments.registrations.seeding.update'), [
+            'tournament_id' => $tournament->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'overview',
+            'registrations' => $registrations->values()->map(fn (TournamentRegistration $registration, int $index): array => [
+                'id' => $registration->id,
+                'seed_number' => $index + 1,
+                'bracket_code' => $index < AdminTournamentController::BRACKET_TEAM_LIMIT
+                    ? 'A'
+                    : ($index < ((AdminTournamentController::BRACKET_TEAM_LIMIT * 2) - 1) ? 'B' : null),
+            ])->all(),
+        ]);
+
+    $response
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHasErrors([
+            'registrations',
+            'registrations.5.bracket_code',
+        ]);
+
+    expect(TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->whereNotNull('bracket_code')
+        ->count())->toBe(0);
+});
+
+test('admin users cannot manually create bracket play before 10 teams are available', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Early Bracket Cup',
+        'slug' => 'early-bracket-cup',
+        'venue' => 'City Oval',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT))->map(function (int $number) use ($teamOwner, $tournament) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Early Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        return TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    });
+
+    $this->actingAs($admin);
+
+    $response = $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->patch(route('admin.tournaments.registrations.seeding.update'), [
+            'tournament_id' => $tournament->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'overview',
+            'registrations' => $registrations->values()->map(fn (TournamentRegistration $registration, int $index): array => [
+                'id' => $registration->id,
+                'seed_number' => $index + 1,
+                'bracket_code' => 'A',
+            ])->all(),
+        ]);
+
+    $response
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHasErrors([
+            'registrations',
+            'registrations.0.bracket_code',
+        ]);
+
+    expect(TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->whereNotNull('bracket_code')
+        ->count())->toBe(0);
 });
 
 test('admin format tab shows the frisbee tournament workflow', function () {

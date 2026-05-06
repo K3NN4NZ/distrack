@@ -13,8 +13,10 @@ use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -23,11 +25,26 @@ use Illuminate\View\View;
 
 class TournamentController extends Controller
 {
+    public const BRACKET_TEAM_LIMIT = 5;
+
+    public const MINIMUM_BRACKET_COUNT = 2;
+
+    public const MINIMUM_BRACKET_TEAM_COUNT = self::BRACKET_TEAM_LIMIT * self::MINIMUM_BRACKET_COUNT;
+
     /**
      * Show the admin tournament setup page.
      */
-    public function index(Request $request): View
+    public function index(Request $request): View|RedirectResponse
     {
+        $requestedTab = $request->string('tab')->toString();
+        $normalizedRequestedTab = $this->normalizeTournamentTab($requestedTab);
+
+        if ($requestedTab !== '' && $normalizedRequestedTab !== null && $normalizedRequestedTab !== $requestedTab) {
+            return redirect()->route('admin.tournaments.index', collect($request->query())
+                ->put('tab', $normalizedRequestedTab)
+                ->all());
+        }
+
         $selectedTournament = $request->filled('tournament')
             ? Tournament::query()->find($request->integer('tournament'))
             : null;
@@ -422,6 +439,363 @@ class TournamentController extends Controller
     }
 
     /**
+     * Auto-assign sequential seeds and compose brackets only when two full groups can be formed.
+     */
+    public function seedRegistrations(Request $request): RedirectResponse|JsonResponse
+    {
+        $validated = $request->validate([
+            'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
+        ]);
+
+        $registrations = TournamentRegistration::query()
+            ->where('tournament_id', $validated['tournament_id'])
+            ->get()
+            ->shuffle()
+            ->values();
+
+        if ($registrations->isEmpty()) {
+            return $this->buildSeedRegistrationsResponse(
+                request: $request,
+                tournamentId: $validated['tournament_id'],
+                status: 'registrations-seeding-skipped',
+            );
+        }
+
+        $fullBracketTeamCount = $registrations->count() >= self::MINIMUM_BRACKET_TEAM_COUNT
+            ? intdiv($registrations->count(), self::BRACKET_TEAM_LIMIT) * self::BRACKET_TEAM_LIMIT
+            : 0;
+
+        $bracketCount = $fullBracketTeamCount > 0
+            ? intdiv($fullBracketTeamCount, self::BRACKET_TEAM_LIMIT)
+            : 0;
+
+        $bracketSlots = $bracketCount > 0
+            ? collect(range(0, $bracketCount - 1))
+                ->flatMap(fn (int $bracketIndex): array => array_fill(
+                    0,
+                    self::BRACKET_TEAM_LIMIT,
+                    'Bracket '.$this->alphabeticalBracketLabel($bracketIndex),
+                ))
+                ->shuffle()
+                ->values()
+            : collect();
+
+        DB::transaction(function () use ($bracketSlots, $fullBracketTeamCount, $registrations): void {
+            foreach ($registrations as $index => $registration) {
+                $seedNumber = $index + 1;
+                $bracketCode = null;
+
+                if ($index < $fullBracketTeamCount) {
+                    $bracketCode = $bracketSlots->get($index);
+                }
+
+                $registration->update([
+                    'seed_number' => $seedNumber,
+                    'bracket_code' => $bracketCode,
+                    'bracket_rank' => null,
+                    'pool_name' => null,
+                ]);
+            }
+        });
+
+        return $this->buildSeedRegistrationsResponse(
+            request: $request,
+            tournamentId: $validated['tournament_id'],
+            status: 'registrations-seeded',
+        );
+    }
+
+    /**
+     * Manually update seed and bracket assignments per team registration.
+     */
+    public function updateRegistrationSeeding(Request $request): RedirectResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
+            'registrations' => ['required', 'array', 'min:1'],
+            'registrations.*.id' => ['required', 'integer', 'exists:tournament_registrations,id'],
+            'registrations.*.seed_number' => ['nullable', 'integer', 'min:1', 'max:9999'],
+            'registrations.*.bracket_code' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $validator->after(function ($validator) use ($request): void {
+            $tournamentId = $request->integer('tournament_id');
+            $registrations = collect($request->input('registrations', []));
+
+            $registrationIds = $registrations
+                ->pluck('id')
+                ->filter(fn ($id) => $id !== null && $id !== '')
+                ->map(fn ($id) => (int) $id)
+                ->values();
+
+            if ($registrationIds->isEmpty()) {
+                return;
+            }
+
+            $ownedRegistrationIds = TournamentRegistration::query()
+                ->where('tournament_id', $tournamentId)
+                ->whereIn('id', $registrationIds)
+                ->pluck('id')
+                ->map(fn ($id): int => (int) $id);
+
+            foreach ($registrationIds as $index => $registrationId) {
+                if (! $ownedRegistrationIds->contains($registrationId)) {
+                    $validator->errors()->add("registrations.{$index}.id", 'This team registration does not belong to the selected tournament.');
+                }
+            }
+
+            $currentRegistrations = TournamentRegistration::query()
+                ->where('tournament_id', $tournamentId)
+                ->get()
+                ->keyBy('id');
+
+            $finalSeedAssignments = $currentRegistrations
+                ->mapWithKeys(fn (TournamentRegistration $registration): array => [
+                    $registration->id => $registration->seed_number,
+                ]);
+
+            foreach ($registrations as $registrationData) {
+                if (! isset($registrationData['id'])) {
+                    continue;
+                }
+
+                $finalSeedAssignments[(int) $registrationData['id']] = filled($registrationData['seed_number'] ?? null)
+                    ? (int) $registrationData['seed_number']
+                    : null;
+            }
+
+            $duplicateSeeds = $finalSeedAssignments
+                ->filter(fn ($seed): bool => $seed !== null)
+                ->countBy()
+                ->filter(fn (int $count): bool => $count > 1);
+
+            if ($duplicateSeeds->isNotEmpty()) {
+                $validator->errors()->add('registrations', 'Seed numbers must be unique per tournament.');
+            }
+
+            $finalBracketAssignments = $currentRegistrations
+                ->mapWithKeys(fn (TournamentRegistration $registration): array => [
+                    $registration->id => $this->normalizeBracketCode($registration->bracket_code),
+                ]);
+
+            foreach ($registrations as $registrationData) {
+                if (! isset($registrationData['id'])) {
+                    continue;
+                }
+
+                $finalBracketAssignments[(int) $registrationData['id']] = $this->normalizeBracketCode(
+                    $registrationData['bracket_code'] ?? null,
+                );
+            }
+
+            $bracketSizes = $finalBracketAssignments
+                ->filter()
+                ->countBy();
+
+            $overflowingBrackets = $bracketSizes
+                ->filter(fn (int $count): bool => $count > self::BRACKET_TEAM_LIMIT);
+
+            $incompleteBrackets = $bracketSizes
+                ->filter(fn (int $count): bool => $count < self::BRACKET_TEAM_LIMIT);
+
+            $activeBracketCount = $bracketSizes->count();
+            $missingBracketCount = $activeBracketCount > 0 && $activeBracketCount < self::MINIMUM_BRACKET_COUNT;
+
+            if (
+                $duplicateSeeds->isEmpty()
+                && $overflowingBrackets->isEmpty()
+                && $incompleteBrackets->isEmpty()
+                && ! $missingBracketCount
+            ) {
+                return;
+            }
+
+            if ($overflowingBrackets->isNotEmpty()) {
+                $validator->errors()->add(
+                    'registrations',
+                    'Each bracket can only contain up to '.self::BRACKET_TEAM_LIMIT.' teams.',
+                );
+            }
+
+            if ($incompleteBrackets->isNotEmpty()) {
+                $validator->errors()->add(
+                    'registrations',
+                    'Each bracket must contain exactly '.self::BRACKET_TEAM_LIMIT.' teams. Leave extra teams without a bracket until a full bracket can be formed.',
+                );
+            }
+
+            if ($missingBracketCount) {
+                $validator->errors()->add(
+                    'registrations',
+                    'Bracket play starts only when at least '.self::MINIMUM_BRACKET_TEAM_COUNT.' teams are available, so you need at least '.self::MINIMUM_BRACKET_COUNT.' full brackets.',
+                );
+            }
+
+            foreach ($registrations as $index => $registrationData) {
+                $submittedSeed = filled($registrationData['seed_number'] ?? null)
+                    ? (int) $registrationData['seed_number']
+                    : null;
+                $normalizedBracket = $this->normalizeBracketCode($registrationData['bracket_code'] ?? null);
+
+                if ($submittedSeed !== null && $duplicateSeeds->has((string) $submittedSeed)) {
+                    $validator->errors()->add(
+                        "registrations.{$index}.seed_number",
+                        "Seed {$submittedSeed} is already assigned to another team in this tournament.",
+                    );
+                }
+
+                if (! $normalizedBracket || ! $overflowingBrackets->has($normalizedBracket)) {
+                    if (! $normalizedBracket || ! $incompleteBrackets->has($normalizedBracket)) {
+                        if (! $normalizedBracket || ! $missingBracketCount) {
+                            continue;
+                        }
+
+                        $validator->errors()->add(
+                            "registrations.{$index}.bracket_code",
+                            'At least '.self::MINIMUM_BRACKET_COUNT.' full brackets are required before teams can be assigned to bracket play.',
+                        );
+
+                        continue;
+                    }
+
+                    $validator->errors()->add(
+                        "registrations.{$index}.bracket_code",
+                        "{$normalizedBracket} currently has {$incompleteBrackets[$normalizedBracket]} teams. Each bracket must contain exactly ".self::BRACKET_TEAM_LIMIT.' teams.',
+                    );
+
+                    continue;
+                }
+
+                $validator->errors()->add(
+                    "registrations.{$index}.bracket_code",
+                    "{$normalizedBracket} can only contain up to ".self::BRACKET_TEAM_LIMIT.' teams.',
+                );
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($validated): void {
+            foreach ($validated['registrations'] as $registrationData) {
+                $registration = TournamentRegistration::query()
+                    ->where('tournament_id', $validated['tournament_id'])
+                    ->findOrFail($registrationData['id']);
+
+                $registration->update([
+                    'seed_number' => $registrationData['seed_number'] ?? null,
+                    'bracket_code' => $this->normalizeBracketCode($registrationData['bracket_code'] ?? null),
+                    'bracket_rank' => null,
+                ]);
+            }
+        });
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
+            )
+            ->with('status', 'registrations-seeding-updated');
+    }
+
+    /**
+     * Generate or refresh round robin matches for the currently bracketed teams.
+     */
+    public function generateRoundRobinMatches(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
+        ]);
+
+        $tournament = Tournament::query()
+            ->with([
+                'pitches',
+                'registrations' => fn ($query) => $query
+                    ->with('team')
+                    ->orderByRaw('case when seed_number is null then 1 else 0 end')
+                    ->orderBy('seed_number')
+                    ->orderBy('id'),
+            ])
+            ->findOrFail($validated['tournament_id']);
+
+        $pitches = $tournament->pitches->values();
+
+        if ($pitches->isEmpty()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
+                )
+                ->withErrors([
+                    'round_robin' => 'Add at least one pitch before generating round robin matches.',
+                ]);
+        }
+
+        $bracketGroups = collect($tournament->registrations)
+            ->filter(fn (TournamentRegistration $registration): bool => filled($registration->bracket_code))
+            ->groupBy(fn (TournamentRegistration $registration): string => $this->normalizeBracketCode($registration->bracket_code) ?? '')
+            ->filter(fn (Collection $registrations, string $bracketCode): bool => $bracketCode !== '' && $registrations->count() >= 2)
+            ->sortKeys()
+            ->map(fn (Collection $registrations): Collection => $registrations->values());
+
+        if ($bracketGroups->isEmpty()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
+                )
+                ->withErrors([
+                    'round_robin' => 'Seed the teams into brackets first before generating round robin matches.',
+                ]);
+        }
+
+        $matchesByRound = $this->buildRoundRobinMatchesByRound($bracketGroups);
+        $nextMatchNumber = (int) (TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('stage', '!=', 'round_robin')
+            ->max('match_number') ?? 0) + 1;
+
+        DB::transaction(function () use ($matchesByRound, $nextMatchNumber, $pitches, $tournament): void {
+            TournamentMatch::query()
+                ->where('tournament_id', $tournament->id)
+                ->where('stage', 'round_robin')
+                ->delete();
+
+            $matchNumber = $nextMatchNumber;
+            $pitchCount = $pitches->count();
+            $pitchIndex = 0;
+
+            foreach ($matchesByRound as $matchData) {
+                $pitch = $pitches->get($pitchIndex % $pitchCount);
+
+                TournamentMatch::query()->create([
+                    'tournament_id' => $tournament->id,
+                    'pitch_id' => $pitch?->id,
+                    'home_registration_id' => $matchData['home_registration_id'],
+                    'away_registration_id' => $matchData['away_registration_id'],
+                    'stage' => 'round_robin',
+                    'round_label' => $matchData['round_label'],
+                    'match_number' => $matchNumber,
+                    'scheduled_at' => null,
+                    'status' => 'scheduled',
+                    'home_score' => null,
+                    'away_score' => null,
+                    'notes' => null,
+                ]);
+
+                $matchNumber++;
+                $pitchIndex++;
+            }
+        });
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
+            )
+            ->with('status', 'round-robin-generated');
+    }
+
+    /**
      * Add a match schedule or result entry to a selected tournament.
      */
     public function storeMatch(Request $request): RedirectResponse
@@ -659,6 +1033,258 @@ class TournamentController extends Controller
         }
 
         return $uppercase ? Str::upper($value) : $value;
+    }
+
+    /**
+     * Convert a zero-based bracket index into A, B, ... Z, AA, AB, ...
+     */
+    protected function alphabeticalBracketLabel(int $index): string
+    {
+        $label = '';
+        $index++;
+
+        while ($index > 0) {
+            $index--;
+            $label = chr(65 + ($index % 26)).$label;
+            $index = intdiv($index, 26);
+        }
+
+        return $label;
+    }
+
+    /**
+     * Normalize bracket labels so short inputs like "A" become "Bracket A".
+     */
+    protected function normalizeBracketCode(?string $value): ?string
+    {
+        $value = $this->normalizeNullableString($value);
+
+        if (! $value) {
+            return null;
+        }
+
+        if (preg_match('/^[A-Za-z]+$/', $value) === 1) {
+            return 'Bracket '.Str::upper($value);
+        }
+
+        if (str_starts_with(Str::lower($value), 'bracket ')) {
+            $suffix = trim(Str::after($value, ' '));
+
+            return 'Bracket '.Str::upper($suffix);
+        }
+
+        return Str::of($value)->squish()->title()->toString();
+    }
+
+    /**
+     * Build the response after auto-seeding, with JSON support for in-place UI updates.
+     */
+    protected function buildSeedRegistrationsResponse(
+        Request $request,
+        int $tournamentId,
+        string $status,
+    ): RedirectResponse|JsonResponse {
+        if (! $request->expectsJson()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->with('status', $status);
+        }
+
+        $viewData = $this->buildSeedingOverviewViewData(
+            Tournament::query()->findOrFail($tournamentId),
+        );
+
+        $message = $this->resolveSeedRegistrationsStatusMessage($status, $viewData['teamCount']);
+        $viewData['asyncStatusMessage'] = $message;
+
+        return response()->json([
+            'status' => $status,
+            'message' => $message,
+            'overview_html' => view('admin.tournaments.partials.seeding-overview', $viewData)->render(),
+        ]);
+    }
+
+    /**
+     * Build the seeding overview data shared by the overview page and async refreshes.
+     *
+     * @return array<string, mixed>
+     */
+    protected function buildSeedingOverviewViewData(
+        Tournament $tournament,
+        ?string $seedOrderBracketModalCode = null,
+        ?string $asyncStatusMessage = null,
+    ): array {
+        $tournament->load([
+            'registrations' => fn ($query) => $query
+                ->with('team')
+                ->orderByRaw('case when seed_number is null then 1 else 0 end')
+                ->orderBy('seed_number')
+                ->orderBy('id'),
+        ]);
+
+        $teamCount = $tournament->registrations->count();
+        $seededRegistrations = collect($tournament->registrations)
+            ->sort(fn ($left, $right) => [
+                $left->seed_number ?? PHP_INT_MAX,
+                $left->team?->name ?? '',
+                $left->id,
+            ] <=> [
+                $right->seed_number ?? PHP_INT_MAX,
+                $right->team?->name ?? '',
+                $right->id,
+            ])
+            ->values();
+
+        $seededBracketGroups = $this->buildSeededBracketGroups($seededRegistrations);
+
+        return [
+            'selectedTournament' => $tournament,
+            'teamCount' => $teamCount,
+            'seededBracketGroups' => $seededBracketGroups,
+            'unassignedSeededCount' => $seededRegistrations
+                ->filter(fn ($registration): bool => blank($registration->bracket_code))
+                ->count(),
+            'minimumBracketTeamCount' => self::MINIMUM_BRACKET_TEAM_COUNT,
+            'bracketTeamLimit' => self::BRACKET_TEAM_LIMIT,
+            'seedOrderBracketModalCode' => $seedOrderBracketModalCode,
+            'asyncStatusMessage' => $asyncStatusMessage,
+        ];
+    }
+
+    /**
+     * @param  Collection<int, TournamentRegistration>  $seededRegistrations
+     * @return Collection<int, array{code: string, count: int, registrations: Collection<int, TournamentRegistration>, seed_range: string|null}>
+     */
+    protected function buildSeededBracketGroups(Collection $seededRegistrations): Collection
+    {
+        return $seededRegistrations
+            ->filter(fn ($registration): bool => filled($registration->bracket_code))
+            ->groupBy('bracket_code')
+            ->sortKeys()
+            ->map(function (Collection $registrations, string $code): array {
+                $seedNumbers = $registrations
+                    ->pluck('seed_number')
+                    ->filter(fn ($seed): bool => $seed !== null)
+                    ->sort()
+                    ->values();
+
+                $firstSeed = $seedNumbers->first();
+                $lastSeed = $seedNumbers->last();
+
+                return [
+                    'code' => $code,
+                    'count' => $registrations->count(),
+                    'registrations' => $registrations->values(),
+                    'seed_range' => $seedNumbers->isEmpty()
+                        ? null
+                        : ($firstSeed === $lastSeed ? (string) $firstSeed : "{$firstSeed}-{$lastSeed}"),
+                ];
+            })
+            ->values();
+    }
+
+    /**
+     * @param  Collection<string, Collection<int, TournamentRegistration>>  $bracketGroups
+     * @return Collection<int, array{home_registration_id: int, away_registration_id: int, round_label: string}>
+     */
+    protected function buildRoundRobinMatchesByRound(Collection $bracketGroups): Collection
+    {
+        $roundsByBracket = $bracketGroups->map(
+            fn (Collection $registrations, string $bracketCode): Collection => $this->buildBracketRoundRobinRounds(
+                $registrations,
+                $bracketCode,
+            ),
+        );
+
+        $maxRoundCount = (int) $roundsByBracket
+            ->map(fn (Collection $rounds): int => $rounds->count())
+            ->max();
+
+        $matches = collect();
+
+        foreach (range(1, $maxRoundCount) as $roundNumber) {
+            foreach ($roundsByBracket as $rounds) {
+                $matches = $matches->concat($rounds->get($roundNumber, collect()));
+            }
+        }
+
+        return $matches->values();
+    }
+
+    /**
+     * @param  Collection<int, TournamentRegistration>  $registrations
+     * @return Collection<int, Collection<int, array{home_registration_id: int, away_registration_id: int, round_label: string}>>
+     */
+    protected function buildBracketRoundRobinRounds(Collection $registrations, string $bracketCode): Collection
+    {
+        $lineup = $registrations
+            ->sortBy([
+                fn (TournamentRegistration $registration): int => $registration->seed_number ?? PHP_INT_MAX,
+                fn (TournamentRegistration $registration): string => $registration->team?->name ?? '',
+                fn (TournamentRegistration $registration): int => $registration->id,
+            ])
+            ->values()
+            ->all();
+
+        if (count($lineup) % 2 === 1) {
+            $lineup[] = null;
+        }
+
+        $lineupCount = count($lineup);
+
+        if ($lineupCount < 2) {
+            return collect();
+        }
+
+        $fixed = array_shift($lineup);
+        $rotating = $lineup;
+        $half = intdiv($lineupCount, 2);
+        $rounds = collect();
+
+        foreach (range(1, $lineupCount - 1) as $roundNumber) {
+            $currentLineup = array_merge([$fixed], $rotating);
+            $pairings = collect();
+
+            foreach (range(0, $half - 1) as $index) {
+                $home = $currentLineup[$index] ?? null;
+                $away = $currentLineup[$lineupCount - 1 - $index] ?? null;
+
+                if (! $home instanceof TournamentRegistration || ! $away instanceof TournamentRegistration) {
+                    continue;
+                }
+
+                if ($roundNumber % 2 === 0 && $index === 0) {
+                    [$home, $away] = [$away, $home];
+                }
+
+                $pairings->push([
+                    'home_registration_id' => $home->id,
+                    'away_registration_id' => $away->id,
+                    'round_label' => $bracketCode.' - Round '.$roundNumber,
+                ]);
+            }
+
+            $rounds->put($roundNumber, $pairings->values());
+
+            $movingRegistration = array_pop($rotating);
+            array_unshift($rotating, $movingRegistration);
+        }
+
+        return $rounds;
+    }
+
+    protected function resolveSeedRegistrationsStatusMessage(string $status, int $teamCount): string
+    {
+        return match ($status) {
+            'registrations-seeded' => $teamCount >= self::MINIMUM_BRACKET_TEAM_COUNT
+                ? 'Teams seeded successfully. Brackets now use '.self::BRACKET_TEAM_LIMIT.' teams each, and extra teams remain unassigned.'
+                : 'Teams seeded successfully. Brackets start only at '.self::MINIMUM_BRACKET_TEAM_COUNT.' total teams, so all teams remain unassigned for now.',
+            'registrations-seeding-skipped' => 'No registered teams were available for seeding.',
+            default => 'Saved.',
+        };
     }
 
     /**
@@ -1012,9 +1638,18 @@ class TournamentController extends Controller
      */
     protected function resolveTournamentRedirectTab(Request $request): ?string
     {
-        $tab = $request->string('redirect_tab')->toString();
+        return $this->normalizeTournamentTab($request->string('redirect_tab')->toString());
+    }
 
-        return in_array($tab, ['overview', 'basic-info', 'teams', 'pitches', 'format', 'matches', 'crew', 'publish'], true)
+    protected function normalizeTournamentTab(?string $tab): ?string
+    {
+        $tab = $this->normalizeNullableString($tab);
+
+        if ($tab === 'basic-info') {
+            return 'round-robin';
+        }
+
+        return in_array($tab, ['overview', 'round-robin', 'teams', 'pitches', 'format', 'matches', 'crew', 'publish'], true)
             ? $tab
             : null;
     }

@@ -1,16 +1,18 @@
 @php
+    $bracketTeamLimit = \App\Http\Controllers\Admin\TournamentController::BRACKET_TEAM_LIMIT;
+    $minimumBracketTeamCount = \App\Http\Controllers\Admin\TournamentController::MINIMUM_BRACKET_TEAM_COUNT;
     $formatCards = [
         [
             'day' => __('Day 0'),
             'title' => __('Seeding'),
-            'summary' => __('Lock the seed order first, then place teams into Brackets A-D using the frisbee event flow before match play starts.'),
+            'summary' => __('Lock the seed order first. Brackets only begin once at least :minimum teams are registered, and each bracket holds :count teams.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]),
             'tone' => 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/30',
             'accent' => 'bg-emerald-600 text-white',
             'steps' => [
                 [
                     'label' => __('Seeding'),
                     'key' => 'seeding',
-                    'detail' => __('Assign the event seed list and spread the teams across Brackets A, B, C, and D in the agreed frisbee order.'),
+                    'detail' => __('Assign the event seed list, then open bracket play only when you can form at least two full :count-team brackets.', ['count' => $bracketTeamLimit]),
                 ],
             ],
         ],

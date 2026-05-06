@@ -129,6 +129,20 @@ Oscar Fernandez
 Patricia Lim
 Quinn Cruz
 Rafael Flores
+Samantha Diaz
+Tristan Moreno
+Una Castillo
+Victor Padilla
+Wendy Salazar
+Xavier Delgado
+Yasmin Herrera
+Zion Mercado
+Alyssa Peralta
+Brandon Soriano
+Camille Natividad
+Dominic Alonzo
+Ella Serrano
+Felix Rosales
 NAMES
     )))
 );

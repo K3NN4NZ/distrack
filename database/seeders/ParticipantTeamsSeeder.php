@@ -13,7 +13,7 @@ use InvalidArgumentException;
 
 class ParticipantTeamsSeeder extends Seeder
 {
-    private const TEAM_COUNT = 9;
+    private const TEAM_COUNT = 10;
 
     private const MIN_TOTAL_PLAYERS_PER_TEAM = 14;
 
@@ -24,7 +24,7 @@ class ParticipantTeamsSeeder extends Seeder
     private const MAX_STANDARD_MEMBERS = 15;
 
     /**
-     * Seed nine teams from the configured participant list.
+     * Seed the configured participant teams from the participant list.
      */
     public function run(): void
     {
@@ -32,7 +32,10 @@ class ParticipantTeamsSeeder extends Seeder
         $teamProfiles = $this->teamProfiles();
 
         if (count($teamProfiles) !== self::TEAM_COUNT) {
-            throw new InvalidArgumentException('ParticipantTeamsSeeder expects exactly 9 team profiles.');
+            throw new InvalidArgumentException(sprintf(
+                'ParticipantTeamsSeeder expects exactly %d team profiles.',
+                self::TEAM_COUNT,
+            ));
         }
 
         $participantCount = $participants->count();
@@ -148,6 +151,7 @@ class ParticipantTeamsSeeder extends Seeder
             ['name' => 'Seeded Voltstream', 'address' => 'Punta Princesa', 'city' => 'Cebu City', 'province' => 'Cebu', 'country_name' => 'Philippines'],
             ['name' => 'Seeded Daybreak', 'address' => 'San Miguel', 'city' => 'Iligan City', 'province' => 'Lanao del Norte', 'country_name' => 'Philippines'],
             ['name' => 'Seeded Ironwood', 'address' => 'Poblacion', 'city' => 'Valencia City', 'province' => 'Bukidnon', 'country_name' => 'Philippines'],
+            ['name' => 'Seeded Stormcallers', 'address' => 'Santo Nino', 'city' => 'Cagayan de Oro', 'province' => 'Misamis Oriental', 'country_name' => 'Philippines'],
         ];
     }
 
@@ -202,3 +206,6 @@ class ParticipantTeamsSeeder extends Seeder
         ]);
     }
 }
+// diri sa http://distrack.test/admin/tournaments?tournament=2&tab=round-robin
+
+// include diri sa pitches like mag add ug pitch ayha dayon mag round robin

@@ -1,69 +1,22 @@
 @php
+    $bracketTeamLimit = \App\Http\Controllers\Admin\TournamentController::BRACKET_TEAM_LIMIT;
+    $minimumBracketTeamCount = \App\Http\Controllers\Admin\TournamentController::MINIMUM_BRACKET_TEAM_COUNT;
     $user = auth()->user();
     $isAdmin = $user->isAdmin();
 
-    $normalizeStoredRows = function (?array $items, string $valueKey = 'value'): array {
-        return collect($items ?? [])
-            ->filter(fn ($item): bool => is_array($item))
-            ->map(function (array $item) use ($valueKey): ?array {
-                $label = trim((string) ($item['label'] ?? ''));
-                $value = trim((string) ($item[$valueKey] ?? ''));
-
-                if ($label === '' || $value === '') {
-                    return null;
-                }
-
-                return [
-                    'label' => $label,
-                    $valueKey => $value,
-                ];
-            })
-            ->filter()
-            ->values()
-            ->all();
-    };
-
-    $buildTournamentDefaults = function ($tournament) use ($normalizeStoredRows): array {
-        return [
-            'name' => $tournament->name,
-            'venue' => $tournament->venue,
-            'description' => $tournament->description,
-            'registration_deadline' => $tournament->registration_deadline,
-            'starts_at' => $tournament->starts_at,
-            'ends_at' => $tournament->ends_at,
-            'status' => $tournament->status,
-            'country_name' => $tournament->country_name ?: 'Philippines',
-            'province_code' => '',
-            'province' => $tournament->province,
-            'city_code' => '',
-            'city' => $tournament->city,
-            'barangay_code' => '',
-            'barangay' => $tournament->barangay,
-            'timezone' => $tournament->timezone,
-            'venue_google_map_link' => $tournament->venue_google_map_link,
-            'thumbnail_path' => $tournament->thumbnail_path,
-            'event_type' => $tournament->event_type,
-            'division' => $tournament->division,
-            'surface' => $tournament->surface,
-            'info_items' => $tournament->additionalInfoItems(),
-            'organizer_items' => $normalizeStoredRows($tournament->organizer_items ?? []),
-            'link_items' => $normalizeStoredRows($tournament->link_items ?? [], 'href'),
-            'is_public' => (bool) $tournament->is_public,
-        ];
-    };
-
     $adminTabs = [
-        ['key' => 'overview', 'label' => __('Overview')],
-        ['key' => 'basic-info', 'label' => __('Basic Info')],
-        ['key' => 'teams', 'label' => __('Teams')],
-        ['key' => 'pitches', 'label' => __('Pitches')],
-        ['key' => 'format', 'label' => __('Format')],
-        ['key' => 'matches', 'label' => __('Matches')],
-        ['key' => 'crew', 'label' => __('Crew')],
-        ['key' => 'publish', 'label' => __('Publish & Preview')],
+        ['key' => 'overview', 'label' => __('Seeding')],
+        ['key' => 'round-robin', 'label' => __('Round Robin')],
+        ['key' => 'teams', 'label' => __('Bracket Ranking')],
+        ['key' => 'pitches', 'label' => __('Crossover')],
+        ['key' => 'format', 'label' => __('Pooling')],
+        ['key' => 'matches', 'label' => __('Quarter Final')],
+        ['key' => 'crew', 'label' => __('Semi Finals')],
+        ['key' => 'publish', 'label' => __('Championship')],
     ];
     $adminTabKeys = array_column($adminTabs, 'key');
     $requestedTab = request()->string('tab')->toString();
+    $requestedTab = $requestedTab === 'basic-info' ? 'round-robin' : $requestedTab;
     $selectedTab = in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'overview';
 
     $pitchModalTournamentId = old('pitch_tournament_id')
@@ -83,11 +36,56 @@
     $showRegisterModal = $selectedTournament && $registerModalTournamentId === $selectedTournament->id;
     $showMatchModal = $selectedTournament && $matchModalTournamentId === $selectedTournament->id;
     $showCrewModal = $selectedTournament && $crewModalTournamentId === $selectedTournament->id;
+    $seedOrderBracketModalCode = ($seedOrderBracket = trim((string) old('seed_order_bracket_code', ''))) !== ''
+        ? $seedOrderBracket
+        : null;
 
     $teamCount = $selectedTournament?->registrations?->count() ?? 0;
     $pitchCount = $selectedTournament?->pitches?->count() ?? 0;
     $matchCount = $selectedTournament?->matches?->count() ?? 0;
     $crewCount = $selectedTournament?->crewMembers?->count() ?? 0;
+    $seededRegistrations = collect($selectedTournament?->registrations ?? [])
+        ->sort(fn ($left, $right) => [
+            $left->seed_number ?? PHP_INT_MAX,
+            $left->team?->name ?? '',
+            $left->id,
+        ] <=> [
+            $right->seed_number ?? PHP_INT_MAX,
+            $right->team?->name ?? '',
+            $right->id,
+        ])
+        ->values();
+    $seededBracketGroups = $seededRegistrations
+        ->filter(fn ($registration): bool => filled($registration->bracket_code))
+        ->groupBy('bracket_code')
+        ->sortKeys()
+        ->map(function ($registrations, string $code): array {
+            $seedNumbers = $registrations
+                ->pluck('seed_number')
+                ->filter(fn ($seed): bool => $seed !== null)
+                ->sort()
+                ->values();
+
+            $firstSeed = $seedNumbers->first();
+            $lastSeed = $seedNumbers->last();
+
+            return [
+                'code' => $code,
+                'count' => $registrations->count(),
+                'registrations' => $registrations->values(),
+                'seed_range' => $seedNumbers->isEmpty()
+                    ? null
+                    : ($firstSeed === $lastSeed ? (string) $firstSeed : "{$firstSeed}-{$lastSeed}"),
+            ];
+        })
+        ->values();
+    $unassignedSeededCount = $seededRegistrations
+        ->filter(fn ($registration): bool => blank($registration->bracket_code))
+        ->count();
+    $roundRobinMatches = collect($selectedTournament?->matches ?? [])
+        ->filter(fn ($match): bool => $match->stage === 'round_robin')
+        ->values();
+    $hasBracketThreshold = $teamCount >= $minimumBracketTeamCount;
     $canCreateMatches = $selectedTournament ? $teamCount >= 2 : false;
     $firstScorableMatch = $selectedTournament?->matches?->first(
         fn ($match): bool => $match->homeRegistration && $match->awayRegistration
@@ -163,6 +161,20 @@
                             @break
                         @case('registration-created')
                             {{ __('Team registered successfully.') }}
+                            @break
+                        @case('registrations-seeded')
+                            {{ $hasBracketThreshold
+                                ? __('Teams seeded successfully. Brackets now use :count teams each, and extra teams remain unassigned.', ['count' => $bracketTeamLimit])
+                                : __('Teams seeded successfully. Brackets start only at :count total teams, so all teams remain unassigned for now.', ['count' => $minimumBracketTeamCount]) }}
+                            @break
+                        @case('registrations-seeding-skipped')
+                            {{ __('No registered teams were available for seeding.') }}
+                            @break
+                        @case('registrations-seeding-updated')
+                            {{ __('Manual seeding updated successfully.') }}
+                            @break
+                        @case('round-robin-generated')
+                            {{ __('Round robin matches generated successfully.') }}
                             @break
                         @case('match-created')
                             {{ __('Match added successfully.') }}
@@ -279,152 +291,200 @@
                 </section>
 
                 @if ($selectedTab === 'overview')
-                    <section class="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                        <div class="space-y-4">
-                            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                                <div class="flex items-start justify-between gap-4">
-                                    <div>
-                                        <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Readiness Checklist') }}</h2>
-                                        <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                            {{ __('Use this to see what is still missing before the tournament is ready for live operations and publishing.') }}
-                                        </p>
-                                    </div>
-                                    <span class="rounded-full border border-neutral-200 px-3 py-1 text-xs font-semibold text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                        {{ __(':ready of :total ready', ['ready' => collect($readinessChecks)->where('ready', true)->count(), 'total' => count($readinessChecks)]) }}
-                                    </span>
+                    <section class="space-y-6">
+                        <div data-seeding-overview-container>
+                            @include('admin.tournaments.partials.seeding-overview', [
+                                'selectedTournament' => $selectedTournament,
+                                'teamCount' => $teamCount,
+                                'seededBracketGroups' => $seededBracketGroups,
+                                'unassignedSeededCount' => $unassignedSeededCount,
+                                'minimumBracketTeamCount' => $minimumBracketTeamCount,
+                                'bracketTeamLimit' => $bracketTeamLimit,
+                                'seedOrderBracketModalCode' => $seedOrderBracketModalCode,
+                                'asyncStatusMessage' => null,
+                            ])
+                        </div>
+
+                        <script data-navigate-once>
+                            (() => {
+                                if (window.__distrackAsyncSeedingBound) {
+                                    return;
+                                }
+
+                                window.__distrackAsyncSeedingBound = true;
+
+                                document.addEventListener('submit', async (event) => {
+                                    const form = event.target;
+
+                                    if (!(form instanceof HTMLFormElement) || !form.matches('[data-seeding-randomize-form]')) {
+                                        return;
+                                    }
+
+                                    const container = form.closest('[data-seeding-overview-container]')
+                                        ?? document.querySelector('[data-seeding-overview-container]');
+
+                                    if (!(container instanceof HTMLElement)) {
+                                        return;
+                                    }
+
+                                    event.preventDefault();
+
+                                    const submitButtons = Array.from(form.querySelectorAll('button, [type="submit"]'))
+                                        .filter((element) => element instanceof HTMLButtonElement || element instanceof HTMLInputElement);
+
+                                    submitButtons.forEach((button) => {
+                                        button.dataset.originalDisabled = button.disabled ? 'true' : 'false';
+                                        button.disabled = true;
+                                    });
+
+                                    try {
+                                        const response = await fetch(form.action, {
+                                            method: form.method || 'POST',
+                                            headers: {
+                                                'Accept': 'application/json',
+                                                'X-Requested-With': 'XMLHttpRequest',
+                                            },
+                                            body: new FormData(form),
+                                        });
+
+                                        if (!response.ok) {
+                                            throw new Error(`Randomize request failed with status ${response.status}.`);
+                                        }
+
+                                        const payload = await response.json();
+
+                                        if (typeof payload.overview_html !== 'string') {
+                                            throw new Error('Missing seeding overview HTML in response.');
+                                        }
+
+                                        container.innerHTML = payload.overview_html;
+                                    } catch (error) {
+                                        console.error(error);
+
+                                        submitButtons.forEach((button) => {
+                                            button.disabled = button.dataset.originalDisabled === 'true';
+                                        });
+
+                                        form.submit();
+                                    }
+                                });
+                            })();
+                        </script>
+                    </section>
+                @elseif ($selectedTab === 'round-robin')
+                    <section class="space-y-6">
+                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Round Robin') }}</h2>
+                                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                        {{ __('Generate the opening bracket matchups here. The current brackets are used as the round robin groups, and available pitches are assigned automatically in order.') }}
+                                    </p>
                                 </div>
 
-                                <div class="mt-5 space-y-3">
-                                    @foreach ($readinessChecks as $check)
-                                        <div class="flex items-start gap-3 rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
-                                            <span class="mt-1 h-2.5 w-2.5 rounded-full {{ $check['ready'] ? 'bg-emerald-500' : 'bg-amber-500' }}"></span>
-                                            <div>
-                                                <div class="font-medium text-zinc-900 dark:text-white">{{ $check['label'] }}</div>
-                                                <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ $check['detail'] }}</div>
+                                <form method="POST" action="{{ route('admin.tournaments.matches.round-robin.generate') }}">
+                                    @csrf
+                                    <input type="hidden" name="tournament_id" value="{{ $selectedTournament->id }}">
+                                    <input type="hidden" name="redirect_route" value="admin.tournaments.index">
+                                    <input type="hidden" name="redirect_tab" value="round-robin">
+
+                                    <flux:button
+                                        type="submit"
+                                        variant="primary"
+                                        :disabled="$seededBracketGroups->isEmpty() || $pitchCount === 0"
+                                    >
+                                        {{ $roundRobinMatches->isNotEmpty() ? __('Regenerate Round Robin') : __('Generate Round Robin') }}
+                                    </flux:button>
+                                </form>
+                            </div>
+
+                            @if ($errors->has('round_robin'))
+                                <div class="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+                                    {{ $errors->first('round_robin') }}
+                                </div>
+                            @endif
+
+                            <div class="mt-5 grid gap-3 md:grid-cols-4">
+                                <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
+                                    <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Brackets') }}</div>
+                                    <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $seededBracketGroups->count() }}</div>
+                                </div>
+                                <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
+                                    <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Teams') }}</div>
+                                    <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $teamCount }}</div>
+                                </div>
+                                <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
+                                    <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Pitches') }}</div>
+                                    <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $pitchCount }}</div>
+                                </div>
+                                <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
+                                    <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Matches') }}</div>
+                                    <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $roundRobinMatches->count() }}</div>
+                                </div>
+                            </div>
+
+                            <div class="mt-4 rounded-xl border border-dashed border-neutral-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-300">
+                                {{ __('This uses the current seeded brackets. For the sample setup, the generated round robin matches will rotate through the :count available pitches.', ['count' => $pitchCount]) }}
+                            </div>
+
+                            @if ($seededBracketGroups->isNotEmpty())
+                                <div class="mt-4 grid gap-3 md:grid-cols-2">
+                                    @foreach ($seededBracketGroups as $group)
+                                        <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-4 dark:border-neutral-700 dark:bg-zinc-950">
+                                            <div class="font-semibold text-zinc-900 dark:text-white">{{ $group['code'] }}</div>
+                                            <div class="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                                @foreach ($group['registrations'] as $registration)
+                                                    <div>{{ ($registration->seed_number ?? '-') . ' - ' . $registration->team->name }}</div>
+                                                @endforeach
                                             </div>
                                         </div>
                                     @endforeach
                                 </div>
-                            </section>
+                            @endif
 
-                            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                                <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Quick Actions') }}</h2>
-                                <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                    {{ __('Quick inputs stay in modals so the setup workspace remains clean while you configure the larger tournament flow by tab.') }}
+                            @if ($pitchCount === 0 || $seededBracketGroups->isEmpty())
+                                <p class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                                    {{ __('Add at least one pitch and make sure teams are already assigned to brackets before generating round robin matches.') }}
                                 </p>
+                            @endif
+                        </section>
 
-                                <div class="mt-5 grid gap-3 sm:grid-cols-2">
-                                    <flux:modal.trigger name="setup-register-team-modal-{{ $selectedTournament->id }}">
-                                        <flux:button variant="primary" class="w-full justify-center">
-                                            {{ __('Register Team') }}
-                                        </flux:button>
-                                    </flux:modal.trigger>
+                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
+                            <div class="mb-4 flex items-center justify-between gap-4">
+                                <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Round Robin Schedule') }}</h2>
+                                <span class="rounded-md border border-neutral-200 px-3 py-1 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
+                                    {{ trans_choice('{0} No matches yet|{1} :count match|[2,*] :count matches', $roundRobinMatches->count(), ['count' => $roundRobinMatches->count()]) }}
+                                </span>
+                            </div>
 
-                                    <flux:modal.trigger name="setup-add-pitch-modal-{{ $selectedTournament->id }}">
-                                        <flux:button variant="ghost" class="w-full justify-center">
-                                            {{ __('Add Pitch') }}
-                                        </flux:button>
-                                    </flux:modal.trigger>
-
-                                    <flux:modal.trigger name="setup-add-match-modal-{{ $selectedTournament->id }}">
-                                        <flux:button variant="ghost" class="w-full justify-center" :disabled="! $canCreateMatches">
-                                            {{ __('Add Match') }}
-                                        </flux:button>
-                                    </flux:modal.trigger>
-
-                                    <flux:modal.trigger name="setup-add-crew-modal-{{ $selectedTournament->id }}">
-                                        <flux:button variant="ghost" class="w-full justify-center">
-                                            {{ __('Add Crew Member') }}
-                                        </flux:button>
-                                    </flux:modal.trigger>
-                                </div>
-
-                                @unless ($canCreateMatches)
-                                    <p class="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-                                        {{ __('Register at least two teams before creating a match.') }}
-                                    </p>
-                                @endunless
-                            </section>
-                        </div>
-
-                        <div class="space-y-4">
-                            <section class="grid gap-4 sm:grid-cols-2">
-                                <div class="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-700 dark:bg-zinc-900">
-                                    <div class="text-sm text-zinc-500">{{ __('Teams') }}</div>
-                                    <div class="mt-2 text-3xl font-semibold text-zinc-900 dark:text-white">{{ $teamCount }}</div>
-                                    <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Registered tournament entries') }}</div>
-                                </div>
-
-                                <div class="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-700 dark:bg-zinc-900">
-                                    <div class="text-sm text-zinc-500">{{ __('Pitches') }}</div>
-                                    <div class="mt-2 text-3xl font-semibold text-zinc-900 dark:text-white">{{ $pitchCount }}</div>
-                                    <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Playable fields configured') }}</div>
-                                </div>
-
-                                <div class="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-700 dark:bg-zinc-900">
-                                    <div class="text-sm text-zinc-500">{{ __('Matches') }}</div>
-                                    <div class="mt-2 text-3xl font-semibold text-zinc-900 dark:text-white">{{ $matchCount }}</div>
-                                    <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Scheduled match records') }}</div>
-                                </div>
-
-                                <div class="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-700 dark:bg-zinc-900">
-                                    <div class="text-sm text-zinc-500">{{ __('Crew') }}</div>
-                                    <div class="mt-2 text-3xl font-semibold text-zinc-900 dark:text-white">{{ $crewCount }}</div>
-                                    <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Public staff directory entries') }}</div>
-                                </div>
-                            </section>
-
-                            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                                <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Tournament Summary') }}</h2>
-                                <div class="mt-5 grid gap-4 sm:grid-cols-2">
+                            <div class="space-y-3">
+                                @forelse ($roundRobinMatches as $match)
                                     <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('Venue') }}</div>
-                                        <div class="mt-2 font-semibold text-zinc-900 dark:text-white">{{ $selectedTournament->venue }}</div>
-                                    </div>
-
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('Location') }}</div>
-                                        <div class="mt-2 font-semibold text-zinc-900 dark:text-white">
-                                            {{ $selectedTournament->addressLabel() ?: __('Location to be announced') }}
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div class="font-semibold text-zinc-900 dark:text-white">
+                                                    {{ $match->homeRegistration?->team->name ?? __('TBD') }}
+                                                    {{ __('vs') }}
+                                                    {{ $match->awayRegistration?->team->name ?? __('TBD') }}
+                                                </div>
+                                                <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                                    {{ $match->round_label ?: __('Round Robin') }}
+                                                </div>
+                                            </div>
+                                            <div class="text-right text-xs text-zinc-500 dark:text-zinc-400">
+                                                <div>{{ __('Match #: :value', ['value' => $match->match_number ?? '-']) }}</div>
+                                                <div class="mt-1">{{ __('Pitch: :value', ['value' => $match->pitch?->name ?? '-']) }}</div>
+                                            </div>
                                         </div>
                                     </div>
-
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('Date Window') }}</div>
-                                        <div class="mt-2 font-semibold text-zinc-900 dark:text-white">{{ $selectedTournament->dateRangeLabel() }}</div>
+                                @empty
+                                    <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
+                                        {{ __('No round robin matches have been generated yet.') }}
                                     </div>
+                                @endforelse
+                            </div>
+                        </section>
 
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('Registration Deadline') }}</div>
-                                        <div class="mt-2 font-semibold text-zinc-900 dark:text-white">
-                                            {{ $selectedTournament->registration_deadline?->format('M j, Y g:i A') ?? __('Not set') }}
-                                        </div>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </section>
-                @elseif ($selectedTab === 'basic-info')
-                    <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                        <div class="mb-6">
-                            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Basic Info') }}</h2>
-                            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                {{ __('Edit the tournament profile, schedule metadata, address, organizer info, and public board visibility from one place.') }}
-                            </p>
-                        </div>
-
-                        @include('admin.tournaments.partials.form', [
-                            'action' => route('admin.tournaments.update', $selectedTournament),
-                            'method' => 'PUT',
-                            'submitLabel' => __('Save Tournament Changes'),
-                            'fieldPrefix' => 'edit_',
-                            'defaults' => $buildTournamentDefaults($selectedTournament),
-                            'hiddenFields' => [
-                                'edit_tournament_id' => $selectedTournament->id,
-                                'redirect_route' => 'admin.tournaments.index',
-                                'redirect_tab' => 'basic-info',
-                            ],
-                        ])
                     </section>
                 @elseif ($selectedTab === 'teams')
                     <section class="space-y-6">
@@ -469,7 +529,6 @@
                                         </div>
                                         <div class="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500 dark:text-zinc-400">
                                             <span>{{ __('Bracket: :value', ['value' => $registration->bracket_code ?? '-']) }}</span>
-                                            <span>{{ __('Rank: :value', ['value' => $registration->bracket_rank ?? '-']) }}</span>
                                             <span>{{ __('Pool: :value', ['value' => $registration->pool_name ?? '-']) }}</span>
                                         </div>
                                     </div>
@@ -699,11 +758,11 @@
                                 </div>
 
                                 <a
-                                    href="{{ route('admin.tournaments.index', ['tournament' => $selectedTournament->id, 'tab' => 'basic-info']) }}"
+                                    href="{{ route('admin.tournaments.index', ['tournament' => $selectedTournament->id, 'tab' => 'round-robin']) }}"
                                     wire:navigate
                                     class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                                 >
-                                    {{ __('Edit Basic Info') }}
+                                    {{ __('Edit Round Robin') }}
                                 </a>
                             </div>
 

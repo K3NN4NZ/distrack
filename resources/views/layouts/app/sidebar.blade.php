@@ -62,10 +62,6 @@
                             {{ __('Create Tournament') }}
                         </flux:sidebar.item>
 
-                        <flux:sidebar.item icon="cog" :href="route('admin.tournaments.index')" :current="$tournamentSetupCurrent" wire:navigate>
-                            {{ __('Tournament Setup') }}
-                        </flux:sidebar.item>
-
                         <flux:sidebar.item
                             icon="trophy"
                             :href="route('admin.tournaments.list')"
@@ -73,6 +69,10 @@
                             wire:navigate
                         >
                             {{ __('Tournaments') }}
+                        </flux:sidebar.item>
+
+                        <flux:sidebar.item icon="cog" :href="route('admin.tournaments.index')" :current="$tournamentSetupCurrent" wire:navigate>
+                            {{ __('Tournament Setup') }}
                         </flux:sidebar.item>
 
                         <flux:sidebar.item
