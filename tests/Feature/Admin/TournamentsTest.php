@@ -157,8 +157,91 @@ test('round robin tab no longer shows the tournament profile form', function () 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
         ->assertOk()
         ->assertSee('Round Robin')
+        ->assertSee('Round robin matches are created manually.')
+        ->assertSee('No pitches yet. Manual round robin matches can still be created without a field assignment, or you can add a pitch first.')
+        ->assertDontSee('Generate Round Robin')
+        ->assertDontSee('Regenerate Round Robin')
         ->assertDontSee('Tournament Profile')
         ->assertDontSee('Save Tournament Changes');
+});
+
+test('round robin tab shows per-pitch schedule actions for assigned matches', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pitch Schedule Cup',
+        'slug' => 'pitch-schedule-cup',
+        'venue' => 'Main Grounds',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Pitch Alpha',
+        'location' => 'North Field',
+        'sort_order' => 1,
+        'is_active' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Sky Riders',
+        'address' => 'Valencia City',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Flight Paths',
+        'address' => 'Valencia City',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Bracket A - Round 1',
+        'match_number' => 1,
+        'scheduled_at' => null,
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertOk()
+        ->assertSee('Add Round Robin Here')
+        ->assertSee('Only teams from the selected bracket will load into the matchup fields.')
+        ->assertSee('Pitch Schedule')
+        ->assertSee('Delete Match')
+        ->assertSee('Set Schedule')
+        ->assertSee('Sky Riders')
+        ->assertSee('Flight Paths');
 });
 
 test('legacy basic info tab links redirect to the round robin tab', function () {
@@ -380,7 +463,7 @@ test('admin users can auto seed teams through json for in-place bracket refreshe
     expect($response->json('overview_html'))->toContain('Randomize current brackets');
 });
 
-test('admin users can generate round robin matches from the current brackets using two pitches', function () {
+test('legacy round robin generator endpoint no longer creates matches even when brackets and pitches exist', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -396,7 +479,7 @@ test('admin users can generate round robin matches from the current brackets usi
         'is_public' => false,
     ]);
 
-    $pitchOne = Pitch::query()->create([
+    Pitch::query()->create([
         'tournament_id' => $tournament->id,
         'name' => 'Pitch 1',
         'location' => 'North Field',
@@ -404,7 +487,7 @@ test('admin users can generate round robin matches from the current brackets usi
         'is_active' => true,
     ]);
 
-    $pitchTwo = Pitch::query()->create([
+    Pitch::query()->create([
         'tournament_id' => $tournament->id,
         'name' => 'Pitch 2',
         'location' => 'South Field',
@@ -412,7 +495,7 @@ test('admin users can generate round robin matches from the current brackets usi
         'is_active' => true,
     ]);
 
-    $registrations = collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
+    collect(range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2))
         ->map(function (int $number) use ($teamOwner, $tournament) {
             $team = Team::query()->create([
                 'owner_user_id' => $teamOwner->id,
@@ -438,7 +521,7 @@ test('admin users can generate round robin matches from the current brackets usi
         'redirect_tab' => 'round-robin',
     ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHas('status', 'round-robin-generated');
+        ->assertSessionHasErrors(['round_robin']);
 
     $matches = TournamentMatch::query()
         ->where('tournament_id', $tournament->id)
@@ -446,37 +529,17 @@ test('admin users can generate round robin matches from the current brackets usi
         ->orderBy('match_number')
         ->get();
 
-    expect($matches)->toHaveCount(20);
-    expect($matches->pluck('pitch_id')->unique()->sort()->values()->all())
-        ->toBe([$pitchOne->id, $pitchTwo->id]);
-
-    $bracketAIds = $registrations->take(AdminTournamentController::BRACKET_TEAM_LIMIT)->pluck('id');
-    $bracketBIds = $registrations->slice(AdminTournamentController::BRACKET_TEAM_LIMIT)->pluck('id');
-
-    $bracketAPairs = $matches
-        ->filter(fn (TournamentMatch $match): bool => $bracketAIds->contains($match->home_registration_id) && $bracketAIds->contains($match->away_registration_id))
-        ->map(fn (TournamentMatch $match): string => collect([$match->home_registration_id, $match->away_registration_id])->sort()->implode('-'))
-        ->unique()
-        ->values();
-
-    $bracketBPairs = $matches
-        ->filter(fn (TournamentMatch $match): bool => $bracketBIds->contains($match->home_registration_id) && $bracketBIds->contains($match->away_registration_id))
-        ->map(fn (TournamentMatch $match): string => collect([$match->home_registration_id, $match->away_registration_id])->sort()->implode('-'))
-        ->unique()
-        ->values();
-
-    expect($bracketAPairs)->toHaveCount(10);
-    expect($bracketBPairs)->toHaveCount(10);
+    expect($matches)->toHaveCount(0);
 });
 
-test('round robin generation refreshes existing round robin matches instead of duplicating them', function () {
+test('admin users cannot create a duplicate round robin matchup for the same two teams', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
     $tournament = Tournament::query()->create([
         'created_by' => $admin->id,
-        'name' => 'Round Robin Refresh Cup',
-        'slug' => 'round-robin-refresh-cup',
+        'name' => 'Duplicate Pairing Cup',
+        'slug' => 'duplicate-pairing-cup',
         'venue' => 'City Complex',
         'status' => 'registration',
         'country_name' => 'Philippines',
@@ -485,95 +548,165 @@ test('round robin generation refreshes existing round robin matches instead of d
         'is_public' => false,
     ]);
 
-    foreach (range(1, 2) as $number) {
-        Pitch::query()->create([
-            'tournament_id' => $tournament->id,
-            'name' => 'Refresh Pitch '.$number,
-            'location' => 'Field '.$number,
-            'sort_order' => $number,
-            'is_active' => true,
-        ]);
-    }
-
-    foreach (range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2) as $number) {
-        $team = Team::query()->create([
-            'owner_user_id' => $teamOwner->id,
-            'name' => 'Refresh Team '.$number,
-            'address' => 'Valencia City',
-            'status' => 'active',
-        ]);
-
-        TournamentRegistration::query()->create([
-            'tournament_id' => $tournament->id,
-            'team_id' => $team->id,
-            'status' => 'pending',
-            'seed_number' => $number,
-            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
-        ]);
-    }
-
-    $this->actingAs($admin);
-
-    $payload = [
+    $pitch = Pitch::query()->create([
         'tournament_id' => $tournament->id,
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'round-robin',
-    ];
-
-    $this->post(route('admin.tournaments.matches.round-robin.generate'), $payload);
-    $this->post(route('admin.tournaments.matches.round-robin.generate'), $payload);
-
-    expect(TournamentMatch::query()
-        ->where('tournament_id', $tournament->id)
-        ->where('stage', 'round_robin')
-        ->count())->toBe(20);
-});
-
-test('round robin generation requires at least one pitch', function () {
-    $admin = User::factory()->admin()->create();
-    $teamOwner = User::factory()->create();
-
-    $tournament = Tournament::query()->create([
-        'created_by' => $admin->id,
-        'name' => 'Round Robin Pitchless Cup',
-        'slug' => 'round-robin-pitchless-cup',
-        'venue' => 'City Complex',
-        'status' => 'registration',
-        'country_name' => 'Philippines',
-        'surface' => 'Outdoor',
-        'division' => 'Open',
-        'is_public' => false,
+        'name' => 'Pitch 1',
+        'location' => 'North Field',
+        'sort_order' => 1,
+        'is_active' => true,
     ]);
 
-    foreach (range(1, AdminTournamentController::BRACKET_TEAM_LIMIT * 2) as $number) {
-        $team = Team::query()->create([
-            'owner_user_id' => $teamOwner->id,
-            'name' => 'Pitchless Team '.$number,
-            'address' => 'Valencia City',
-            'status' => 'active',
-        ]);
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Seeded Daybreak',
+        'address' => 'Valencia City',
+        'status' => 'active',
+    ]);
 
-        TournamentRegistration::query()->create([
-            'tournament_id' => $tournament->id,
-            'team_id' => $team->id,
-            'status' => 'pending',
-            'seed_number' => $number,
-            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
-        ]);
-    }
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Seeded Voltstream',
+        'address' => 'Valencia City',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Bracket A - Round 1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
 
     $this->actingAs($admin);
 
     $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->post(route('admin.tournaments.matches.round-robin.generate'), [
+        ->post(route('admin.tournaments.matches.store'), [
             'tournament_id' => $tournament->id,
+            'pitch_id' => $pitch->id,
+            'home_registration_id' => $awayRegistration->id,
+            'away_registration_id' => $homeRegistration->id,
+            'stage' => 'round_robin',
+            'round_robin_bracket_code' => 'Bracket A',
+            'round_label' => 'Bracket A - Round 2',
+            'match_number' => 2,
+            'status' => 'scheduled',
             'redirect_route' => 'admin.tournaments.index',
             'redirect_tab' => 'round-robin',
+            'match_tournament_id' => $tournament->id,
+            'match_form_intent' => 'round_robin_add',
+            'round_robin_pitch_context' => 'pitch-'.$pitch->id,
         ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHasErrors(['round_robin']);
+        ->assertSessionHasErrors(['away_registration_id']);
 
-    expect(TournamentMatch::query()->where('tournament_id', $tournament->id)->count())->toBe(0);
+    expect(TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->count())->toBe(1);
+});
+
+test('admin users cannot reuse a team on the same pitch for another round robin match', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pitch Lock Cup',
+        'slug' => 'pitch-lock-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Pitch 1',
+        'location' => 'North Field',
+        'sort_order' => 1,
+        'is_active' => true,
+    ]);
+
+    $teamNames = ['Seeded Daybreak', 'Seeded Voltstream', 'Seeded Riptide'];
+
+    $registrations = collect($teamNames)->values()->map(function (string $teamName, int $index) use ($teamOwner, $tournament) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => $teamName,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        return TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $index + 1,
+            'bracket_code' => 'Bracket A',
+        ]);
+    });
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $registrations[0]->id,
+        'away_registration_id' => $registrations[1]->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Bracket A - Round 1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->post(route('admin.tournaments.matches.store'), [
+            'tournament_id' => $tournament->id,
+            'pitch_id' => $pitch->id,
+            'home_registration_id' => $registrations[0]->id,
+            'away_registration_id' => $registrations[2]->id,
+            'stage' => 'round_robin',
+            'round_robin_bracket_code' => 'Bracket A',
+            'round_label' => 'Bracket A - Round 2',
+            'match_number' => 2,
+            'status' => 'scheduled',
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'round-robin',
+            'match_tournament_id' => $tournament->id,
+            'match_form_intent' => 'round_robin_add',
+            'round_robin_pitch_context' => 'pitch-'.$pitch->id,
+        ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHasErrors(['pitch_id']);
+
+    expect(TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->count())->toBe(1);
 });
 
 test('admin auto seeding leaves extra teams unassigned after full 5-team brackets are formed', function () {

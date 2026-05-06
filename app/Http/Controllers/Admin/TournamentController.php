@@ -741,7 +741,7 @@ class TournamentController extends Controller
     }
 
     /**
-     * Generate or refresh round robin matches for the currently bracketed teams.
+     * Legacy endpoint retained so stale clients cannot auto-generate round robin matches.
      */
     public function generateRoundRobinMatches(Request $request): RedirectResponse
     {
@@ -749,93 +749,14 @@ class TournamentController extends Controller
             'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
         ]);
 
-        $tournament = Tournament::query()
-            ->with([
-                'pitches',
-                'registrations' => fn ($query) => $query
-                    ->with('team')
-                    ->orderByRaw('case when seed_number is null then 1 else 0 end')
-                    ->orderBy('seed_number')
-                    ->orderBy('id'),
-            ])
-            ->findOrFail($validated['tournament_id']);
-
-        $pitches = $tournament->pitches->values();
-
-        if ($pitches->isEmpty()) {
-            return redirect()
-                ->route(
-                    $this->resolveTournamentRedirectRoute($request),
-                    $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
-                )
-                ->withErrors([
-                    'round_robin' => 'Add at least one pitch before generating round robin matches.',
-                ]);
-        }
-
-        $bracketGroups = collect($tournament->registrations)
-            ->filter(fn (TournamentRegistration $registration): bool => filled($registration->bracket_code))
-            ->groupBy(fn (TournamentRegistration $registration): string => $this->normalizeBracketCode($registration->bracket_code) ?? '')
-            ->filter(fn (Collection $registrations, string $bracketCode): bool => $bracketCode !== '' && $registrations->count() >= 2)
-            ->sortKeys()
-            ->map(fn (Collection $registrations): Collection => $registrations->values());
-
-        if ($bracketGroups->isEmpty()) {
-            return redirect()
-                ->route(
-                    $this->resolveTournamentRedirectRoute($request),
-                    $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
-                )
-                ->withErrors([
-                    'round_robin' => 'Seed the teams into brackets first before generating round robin matches.',
-                ]);
-        }
-
-        $matchesByRound = $this->buildRoundRobinMatchesByRound($bracketGroups);
-        $nextMatchNumber = (int) (TournamentMatch::query()
-            ->where('tournament_id', $tournament->id)
-            ->where('stage', '!=', 'round_robin')
-            ->max('match_number') ?? 0) + 1;
-
-        DB::transaction(function () use ($matchesByRound, $nextMatchNumber, $pitches, $tournament): void {
-            TournamentMatch::query()
-                ->where('tournament_id', $tournament->id)
-                ->where('stage', 'round_robin')
-                ->delete();
-
-            $matchNumber = $nextMatchNumber;
-            $pitchCount = $pitches->count();
-            $pitchIndex = 0;
-
-            foreach ($matchesByRound as $matchData) {
-                $pitch = $pitches->get($pitchIndex % $pitchCount);
-
-                TournamentMatch::query()->create([
-                    'tournament_id' => $tournament->id,
-                    'pitch_id' => $pitch?->id,
-                    'home_registration_id' => $matchData['home_registration_id'],
-                    'away_registration_id' => $matchData['away_registration_id'],
-                    'stage' => 'round_robin',
-                    'round_label' => $matchData['round_label'],
-                    'match_number' => $matchNumber,
-                    'scheduled_at' => null,
-                    'status' => 'scheduled',
-                    'home_score' => null,
-                    'away_score' => null,
-                    'notes' => null,
-                ]);
-
-                $matchNumber++;
-                $pitchIndex++;
-            }
-        });
-
         return redirect()
             ->route(
                 $this->resolveTournamentRedirectRoute($request),
                 $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
             )
-            ->with('status', 'round-robin-generated');
+            ->withErrors([
+                'round_robin' => 'Round robin matches must be created manually. Use Add Match Manually to build the schedule.',
+            ]);
     }
 
     /**
@@ -860,6 +781,7 @@ class TournamentController extends Controller
 
         $validator->after(function ($validator) use ($request): void {
             $tournamentId = $request->integer('tournament_id');
+            $stage = $this->normalizeNullableString($request->string('stage')->toString()) ?? 'group';
 
             if ($request->filled('pitch_id')
                 && ! Pitch::query()
@@ -890,6 +812,78 @@ class TournamentController extends Controller
 
             if ($request->string('status')->toString() === 'completed' && (! $hasHomeScore || ! $hasAwayScore)) {
                 $validator->errors()->add('status', 'Completed matches must include both home and away scores.');
+            }
+
+            if ($stage === 'round_robin') {
+                $homeRegistrationId = $request->integer('home_registration_id');
+                $awayRegistrationId = $request->integer('away_registration_id');
+                $selectedBracketCode = $this->normalizeNullableString($request->string('round_robin_bracket_code')->toString());
+
+                $selectedRegistrations = TournamentRegistration::query()
+                    ->whereIn('id', [$homeRegistrationId, $awayRegistrationId])
+                    ->get()
+                    ->keyBy('id');
+
+                $homeRegistration = $selectedRegistrations->get($homeRegistrationId);
+                $awayRegistration = $selectedRegistrations->get($awayRegistrationId);
+
+                if ($homeRegistration && $awayRegistration) {
+                    if ($this->normalizeBracketCode($homeRegistration->bracket_code) !== $this->normalizeBracketCode($awayRegistration->bracket_code)) {
+                        $validator->errors()->add('away_registration_id', 'Round robin teams must come from the same bracket.');
+                    }
+
+                    if ($selectedBracketCode !== null
+                        && $this->normalizeBracketCode($homeRegistration->bracket_code) !== $this->normalizeBracketCode($selectedBracketCode)
+                    ) {
+                        $validator->errors()->add('round_robin_bracket_code', 'The selected bracket does not match the chosen teams.');
+                    }
+                }
+
+                if ($homeRegistrationId > 0 && $awayRegistrationId > 0) {
+                    $duplicateRoundRobinMatchExists = TournamentMatch::query()
+                        ->where('tournament_id', $tournamentId)
+                        ->where('stage', 'round_robin')
+                        ->where(function (Builder $query) use ($homeRegistrationId, $awayRegistrationId): void {
+                            $query
+                                ->where(function (Builder $pairQuery) use ($homeRegistrationId, $awayRegistrationId): void {
+                                    $pairQuery
+                                        ->where('home_registration_id', $homeRegistrationId)
+                                        ->where('away_registration_id', $awayRegistrationId);
+                                })
+                                ->orWhere(function (Builder $pairQuery) use ($homeRegistrationId, $awayRegistrationId): void {
+                                    $pairQuery
+                                        ->where('home_registration_id', $awayRegistrationId)
+                                        ->where('away_registration_id', $homeRegistrationId);
+                                });
+                        })
+                        ->exists();
+
+                    if ($duplicateRoundRobinMatchExists) {
+                        $validator->errors()->add('away_registration_id', 'This round robin matchup has already been scheduled.');
+                    }
+                }
+
+                $pitchId = $request->integer('pitch_id');
+                $selectedRegistrationIds = collect([$homeRegistrationId, $awayRegistrationId])
+                    ->filter(fn (int $registrationId): bool => $registrationId > 0)
+                    ->values();
+
+                if ($pitchId > 0 && $selectedRegistrationIds->isNotEmpty()) {
+                    $pitchAlreadyHasSelectedTeams = TournamentMatch::query()
+                        ->where('tournament_id', $tournamentId)
+                        ->where('stage', 'round_robin')
+                        ->where('pitch_id', $pitchId)
+                        ->where(function (Builder $query) use ($selectedRegistrationIds): void {
+                            $query
+                                ->whereIn('home_registration_id', $selectedRegistrationIds)
+                                ->orWhereIn('away_registration_id', $selectedRegistrationIds);
+                        })
+                        ->exists();
+
+                    if ($pitchAlreadyHasSelectedTeams) {
+                        $validator->errors()->add('pitch_id', 'One or both selected teams are already scheduled on this pitch.');
+                    }
+                }
             }
         });
 
@@ -1305,96 +1299,6 @@ class TournamentController extends Controller
                 ];
             })
             ->values();
-    }
-
-    /**
-     * @param  Collection<string, Collection<int, TournamentRegistration>>  $bracketGroups
-     * @return Collection<int, array{home_registration_id: int, away_registration_id: int, round_label: string}>
-     */
-    protected function buildRoundRobinMatchesByRound(Collection $bracketGroups): Collection
-    {
-        $roundsByBracket = $bracketGroups->map(
-            fn (Collection $registrations, string $bracketCode): Collection => $this->buildBracketRoundRobinRounds(
-                $registrations,
-                $bracketCode,
-            ),
-        );
-
-        $maxRoundCount = (int) $roundsByBracket
-            ->map(fn (Collection $rounds): int => $rounds->count())
-            ->max();
-
-        $matches = collect();
-
-        foreach (range(1, $maxRoundCount) as $roundNumber) {
-            foreach ($roundsByBracket as $rounds) {
-                $matches = $matches->concat($rounds->get($roundNumber, collect()));
-            }
-        }
-
-        return $matches->values();
-    }
-
-    /**
-     * @param  Collection<int, TournamentRegistration>  $registrations
-     * @return Collection<int, Collection<int, array{home_registration_id: int, away_registration_id: int, round_label: string}>>
-     */
-    protected function buildBracketRoundRobinRounds(Collection $registrations, string $bracketCode): Collection
-    {
-        $lineup = $registrations
-            ->sortBy([
-                fn (TournamentRegistration $registration): int => $registration->seed_number ?? PHP_INT_MAX,
-                fn (TournamentRegistration $registration): string => $registration->team?->name ?? '',
-                fn (TournamentRegistration $registration): int => $registration->id,
-            ])
-            ->values()
-            ->all();
-
-        if (count($lineup) % 2 === 1) {
-            $lineup[] = null;
-        }
-
-        $lineupCount = count($lineup);
-
-        if ($lineupCount < 2) {
-            return collect();
-        }
-
-        $fixed = array_shift($lineup);
-        $rotating = $lineup;
-        $half = intdiv($lineupCount, 2);
-        $rounds = collect();
-
-        foreach (range(1, $lineupCount - 1) as $roundNumber) {
-            $currentLineup = array_merge([$fixed], $rotating);
-            $pairings = collect();
-
-            foreach (range(0, $half - 1) as $index) {
-                $home = $currentLineup[$index] ?? null;
-                $away = $currentLineup[$lineupCount - 1 - $index] ?? null;
-
-                if (! $home instanceof TournamentRegistration || ! $away instanceof TournamentRegistration) {
-                    continue;
-                }
-
-                if ($roundNumber % 2 === 0 && $index === 0) {
-                    [$home, $away] = [$away, $home];
-                }
-
-                $pairings->push([
-                    'home_registration_id' => $home->id,
-                    'away_registration_id' => $away->id,
-                    'round_label' => $bracketCode.' - Round '.$roundNumber,
-                ]);
-            }
-
-            $rounds->put($roundNumber, $pairings->values());
-
-            $movingRegistration = array_pop($rotating);
-            array_unshift($rotating, $movingRegistration);
-        }
-
-        return $rounds;
     }
 
     protected function resolveSeedRegistrationsStatusMessage(string $status, int $teamCount): string
