@@ -89,7 +89,7 @@ test('admin users can view all teams in the admin teams directory', function () 
         ->assertSee('Captain Owner')
         ->assertSee('Spirit Lead')
         ->assertSee('Quezon City, Metro Manila (NCR), Philippines')
-        ->assertSee('captain-owner@distrack.test')
+        ->assertDontSee('captain-owner@distrack.test')
         ->assertSee('3')
         ->assertSee('1');
 });
@@ -98,16 +98,13 @@ test('admin users can create teams in the admin teams directory', function () {
     Storage::fake('public');
 
     $admin = User::factory()->admin()->create();
-    $owner = User::factory()->create([
-        'name' => 'Team Owner',
-        'email' => 'owner@distrack.test',
-    ]);
 
     $this->actingAs($admin);
 
     $this->post(route('admin.teams.store'), [
-        'owner_user_id' => $owner->id,
         'name' => 'Disc Falcons',
+        'captain_name' => 'Mika Captain',
+        'spirit_captain_name' => 'Sam Spirit',
         'address' => 'Poblacion',
         'city' => 'Valencia City',
         'province' => 'Bukidnon',
@@ -117,13 +114,22 @@ test('admin users can create teams in the admin teams directory', function () {
     ])->assertRedirect();
 
     $team = Team::query()->where('name', 'Disc Falcons')->first();
+    $captainUser = User::query()
+        ->where('name', 'Mika Captain')
+        ->where('role', User::ROLE_CAPTAIN)
+        ->first();
+    $captainMember = $team->members()->where('role', 'captain')->first();
 
     expect($team)->not->toBeNull();
-    expect($team->owner_user_id)->toBe($owner->id);
+    expect($captainUser)->not->toBeNull();
+    expect($team->owner_user_id)->toBe($captainUser->id);
     expect($team->city)->toBe('Valencia City');
     expect($team->province)->toBe('Bukidnon');
     expect($team->status)->toBe('active');
     expect($team->logo_path)->not->toBeNull();
+    expect($captainMember->name)->toBe('Mika Captain');
+    expect($captainMember->user_id)->toBe($captainUser->id);
+    expect($team->members()->where('role', 'spirit_captain')->value('name'))->toBe('Sam Spirit');
 
     Storage::disk('public')->assertExists($team->logo_path);
 });
@@ -135,10 +141,6 @@ test('admin users can update teams in the admin teams directory', function () {
     $originalOwner = User::factory()->create([
         'name' => 'Original Owner',
         'email' => 'original-owner@distrack.test',
-    ]);
-    $replacementOwner = User::factory()->create([
-        'name' => 'Replacement Owner',
-        'email' => 'replacement-owner@distrack.test',
     ]);
 
     $team = Team::query()->create([
@@ -157,7 +159,6 @@ test('admin users can update teams in the admin teams directory', function () {
     $this->actingAs($admin);
 
     $this->put(route('admin.teams.update', $team), [
-        'edit_owner_user_id' => $replacementOwner->id,
         'edit_name' => 'Skybreakers Elite',
         'edit_address' => 'Poblacion',
         'edit_city' => 'Valencia City',
@@ -169,7 +170,7 @@ test('admin users can update teams in the admin teams directory', function () {
 
     $team->refresh();
 
-    expect($team->owner_user_id)->toBe($replacementOwner->id);
+    expect($team->owner_user_id)->toBe($originalOwner->id);
     expect($team->name)->toBe('Skybreakers Elite');
     expect($team->address)->toBe('Poblacion');
     expect($team->city)->toBe('Valencia City');

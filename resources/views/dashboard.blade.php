@@ -101,7 +101,7 @@
                 >
                     <div class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Scorekeeper Console') }}</div>
                     <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                        {{ __('Open the tournament directory, choose a tournament, and run live scoring without full admin setup access.') }}
+                        {{ __('Open the tournament directory, choose a tournament, and enter final scores without full admin setup access.') }}
                     </p>
                 </a>
             @endif

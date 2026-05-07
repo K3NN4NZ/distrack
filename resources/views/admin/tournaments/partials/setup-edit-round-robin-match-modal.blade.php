@@ -12,9 +12,9 @@
     <div class="space-y-6">
         <div class="flex items-start justify-between gap-4">
             <div>
-                <flux:heading size="lg">{{ __('Edit Round Robin Match') }}</flux:heading>
+                <flux:heading size="lg">{{ __('Edit Robin') }}</flux:heading>
                 <flux:text class="mt-1">
-                    {{ __('Adjust the team pairing, pitch, schedule, or round label for this round robin match.') }}
+                    {{ __('Adjust the team pairing, pitch, schedule, or round label for this robin.') }}
                 </flux:text>
             </div>
 
@@ -109,7 +109,7 @@
                 />
                 <flux:input
                     name="match_number"
-                    :label="__('Match Number')"
+                    :label="__('Robin Number')"
                     :value="$isThisMatchInOld ? old('match_number', $match->match_number) : $match->match_number"
                     type="number"
                     min="1"

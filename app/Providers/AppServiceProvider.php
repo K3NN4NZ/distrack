@@ -29,6 +29,7 @@ class AppServiceProvider extends ServiceProvider
 
         Gate::define('access-admin', fn (User $user): bool => $user->isAdmin());
         Gate::define('access-scoring', fn (User $user): bool => $user->canAccessScoring());
+        Gate::define('enter-scores', fn (User $user): bool => $user->canEnterScores());
         Gate::define('manage-teams', fn (User $user): bool => $user->isCaptain());
     }
 

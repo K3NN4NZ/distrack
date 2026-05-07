@@ -33,7 +33,7 @@
                 <div>
                     <flux:heading size="xl">{{ __('Teams Directory') }}</flux:heading>
                     <flux:text class="mt-2 max-w-3xl">
-                        {{ __('Create, edit, and delete team profiles while keeping owner assignments, roster leadership, and tournament usage visible in one admin page.') }}
+                        {{ __('Create, edit, and delete team profiles while keeping roster leadership and tournament usage visible in one admin page.') }}
                     </flux:text>
                 </div>
 
@@ -62,7 +62,6 @@
                         <thead class="bg-zinc-50 dark:bg-zinc-800/60">
                             <tr class="text-left text-sm text-zinc-600 dark:text-zinc-300">
                                 <th class="px-5 py-3 font-medium">{{ __('Team') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Owner') }}</th>
                                 <th class="px-5 py-3 font-medium">{{ __('Captain') }}</th>
                                 <th class="px-5 py-3 font-medium">{{ __('Spirit Captain') }}</th>
                                 <th class="px-5 py-3 font-medium">{{ __('Roster') }}</th>
@@ -82,12 +81,6 @@
                                 <tr class="text-sm text-zinc-700 dark:text-zinc-200">
                                     <td class="px-5 py-4">
                                         <div class="font-semibold text-zinc-900 dark:text-white">{{ $team->name }}</div>
-                                    </td>
-                                    <td class="px-5 py-4">
-                                        <div>{{ $team->owner?->name ?? __('No owner') }}</div>
-                                        @if ($team->owner?->email)
-                                            <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ $team->owner->email }}</div>
-                                        @endif
                                     </td>
                                     <td class="px-5 py-4">{{ $captain?->name ?? __('Not assigned') }}</td>
                                     <td class="px-5 py-4">{{ $spiritCaptain?->name ?? __('Not assigned') }}</td>
@@ -169,24 +162,6 @@
                         @csrf
                         @method('PUT')
                         <input type="hidden" name="edit_team_id" value="{{ $team->id }}">
-
-                        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                            {{ __('Owner') }}
-                            <select
-                                name="edit_owner_user_id"
-                                required
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            >
-                                @foreach ($owners as $owner)
-                                    <option value="{{ $owner->id }}" @selected($isEditingThisTeam ? old('edit_owner_user_id') == $owner->id : $team->owner_user_id == $owner->id)>
-                                        {{ $owner->name }} ({{ $owner->email }}) - {{ str($owner->role)->headline() }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            @error('edit_owner_user_id')
-                                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
-                        </label>
 
                         <flux:input
                             name="edit_name"
@@ -341,26 +316,26 @@
                     @csrf
                     <input type="hidden" name="create_team_modal" value="1">
 
-                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        {{ __('Owner') }}
-                        <select
-                            name="owner_user_id"
-                            required
-                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                        >
-                            <option value="">{{ __('Select owner') }}</option>
-                            @foreach ($owners as $owner)
-                                <option value="{{ $owner->id }}" @selected(old('owner_user_id') == $owner->id)>
-                                    {{ $owner->name }} ({{ $owner->email }}) - {{ str($owner->role)->headline() }}
-                                </option>
-                            @endforeach
-                        </select>
-                        @error('owner_user_id')
-                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                        @enderror
-                    </label>
-
                     <flux:input name="name" :label="__('Team Name')" :value="old('name')" type="text" required />
+
+                    <div class="grid gap-4 md:grid-cols-2">
+                        <flux:input
+                            name="captain_name"
+                            :label="__('Captain')"
+                            :value="old('captain_name')"
+                            type="text"
+                            required
+                            autocomplete="name"
+                        />
+
+                        <flux:input
+                            name="spirit_captain_name"
+                            :label="__('Spirit Captain')"
+                            :value="old('spirit_captain_name')"
+                            type="text"
+                            autocomplete="name"
+                        />
+                    </div>
 
                     <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                         {{ __('Address') }}

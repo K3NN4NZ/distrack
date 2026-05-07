@@ -12,6 +12,8 @@ use App\Models\Tournament;
 use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
+use App\Services\BracketRankingService;
+use App\Support\BracketCodes;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -73,10 +75,15 @@ class TournamentController extends Controller
             ->orderBy('name')
             ->get();
 
+        $bracketRankingPreview = $selectedTournament
+            ? app(BracketRankingService::class)->preview($selectedTournament)
+            : null;
+
         return view('admin.tournaments.index', [
             'selectedTournament' => $selectedTournament,
             'availableTeams' => $availableTeams,
             'totalTournamentCount' => Tournament::query()->count(),
+            'bracketRankingPreview' => $bracketRankingPreview,
         ]);
     }
 
@@ -828,7 +835,6 @@ class TournamentController extends Controller
                 $registration->update([
                     'seed_number' => $registrationData['seed_number'] ?? null,
                     'bracket_code' => $this->normalizeBracketCode($registrationData['bracket_code'] ?? null),
-                    'bracket_rank' => null,
                 ]);
             }
         });
@@ -839,6 +845,21 @@ class TournamentController extends Controller
                 $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
             )
             ->with('status', 'registrations-seeding-updated');
+    }
+
+    /**
+     * Assign bracket_rank (e.g. A1, A2) from completed round robin results per bracket.
+     */
+    public function applyBracketRanking(Request $request, Tournament $tournament): RedirectResponse
+    {
+        app(BracketRankingService::class)->apply($tournament);
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournament->id),
+            )
+            ->with('status', 'bracket-ranking-applied');
     }
 
     /**
@@ -1252,23 +1273,7 @@ class TournamentController extends Controller
      */
     protected function normalizeBracketCode(?string $value): ?string
     {
-        $value = $this->normalizeNullableString($value);
-
-        if (! $value) {
-            return null;
-        }
-
-        if (preg_match('/^[A-Za-z]+$/', $value) === 1) {
-            return 'Bracket '.Str::upper($value);
-        }
-
-        if (str_starts_with(Str::lower($value), 'bracket ')) {
-            $suffix = trim(Str::after($value, ' '));
-
-            return 'Bracket '.Str::upper($suffix);
-        }
-
-        return Str::of($value)->squish()->title()->toString();
+        return BracketCodes::normalize($value);
     }
 
     /**

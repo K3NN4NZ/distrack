@@ -36,7 +36,7 @@
             'showDeleteButton' => $user->isAdmin(),
             'description' => $user->isAdmin()
                 ? __('Register teams or edit tournament profiles directly here. Use Setup only when you need pitches, matches, or crew tools.')
-                : __('Open a tournament to access the match list and launch the live scoring console.'),
+                : __('Open a tournament to access the match list and enter final scores.'),
         ])
     </div>
 </x-layouts::app>

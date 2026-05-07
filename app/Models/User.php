@@ -91,11 +91,19 @@ class User extends Authenticatable
     }
 
     /**
-     * Determine whether the user can access live scoring tools.
+     * Determine whether the user can access tournament scoring pages.
      */
     public function canAccessScoring(): bool
     {
         return $this->isAdmin() || $this->isScorekeeper();
+    }
+
+    /**
+     * Determine whether the user can enter match scores.
+     */
+    public function canEnterScores(): bool
+    {
+        return $this->isScorekeeper();
     }
 
     /**

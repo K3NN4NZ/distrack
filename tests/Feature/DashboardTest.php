@@ -16,7 +16,7 @@ test('authenticated users can visit the dashboard', function () {
         ->assertOk()
         ->assertSee('Tournaments')
         ->assertDontSee('Tournament Setup')
-        ->assertSee(route('tournaments.index'), false);
+        ->assertSee(route('captain.tournaments.index'), false);
 });
 
 test('admin dashboard shows tournament management menus', function () {

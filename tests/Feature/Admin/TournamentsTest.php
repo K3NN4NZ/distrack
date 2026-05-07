@@ -157,8 +157,8 @@ test('round robin tab no longer shows the tournament profile form', function () 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
         ->assertOk()
         ->assertSee('Round Robin')
-        ->assertSee('Round robin matches are created manually.')
-        ->assertSee('No pitches yet. Manual round robin matches can still be created without a field assignment, or you can add a pitch first.')
+        ->assertSee('Robins are created manually.')
+        ->assertSee('No pitches yet. Manual robins can still be created without a field assignment, or you can add a pitch first.')
         ->assertDontSee('Generate Round Robin')
         ->assertDontSee('Regenerate Round Robin')
         ->assertDontSee('Tournament Profile')
@@ -235,10 +235,10 @@ test('round robin tab shows per-pitch schedule actions for assigned matches', fu
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
         ->assertOk()
-        ->assertSee('Add Round Robin Here')
+        ->assertSee('Add Robin Here')
         ->assertSee('Only teams from the selected bracket will load into the matchup fields.')
         ->assertSee('Pitch Schedule')
-        ->assertSee('Delete Match')
+        ->assertSee('Delete Robin')
         ->assertSee('Set Schedule')
         ->assertSee('Sky Riders')
         ->assertSee('Flight Paths');
@@ -626,7 +626,7 @@ test('admin users cannot create a duplicate round robin matchup for the same two
         ->count())->toBe(1);
 });
 
-test('admin users cannot reuse a team on the same pitch for another round robin match', function () {
+test('admin users can reuse a team on the same pitch against a different round robin opponent', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -701,12 +701,12 @@ test('admin users cannot reuse a team on the same pitch for another round robin 
             'round_robin_pitch_context' => 'pitch-'.$pitch->id,
         ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHasErrors(['pitch_id']);
+        ->assertSessionHasNoErrors();
 
     expect(TournamentMatch::query()
         ->where('tournament_id', $tournament->id)
         ->where('stage', 'round_robin')
-        ->count())->toBe(1);
+        ->count())->toBe(2);
 });
 
 test('admin auto seeding leaves extra teams unassigned after full 5-team brackets are formed', function () {
@@ -1217,8 +1217,8 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
         ->assertOk()
         ->assertSee('Tournament Scoring Console')
-        ->assertSee('Matches Ready for Scoring')
-        ->assertSee('Live Scoring')
+        ->assertSee('Games Ready for Score Entry')
+        ->assertSee('Input Score')
         ->assertDontSee('Create Tournament')
         ->assertDontSee('Add Pitch')
         ->assertDontSee('Register Team')
@@ -1227,8 +1227,81 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
-        ->assertSee('Live Scoring')
-        ->assertSee('Add Scoring Play');
+        ->assertSee('Game Score')
+        ->assertSee('Manual Score Entry');
+});
+
+test('admin users cannot enter match scores', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Admin No Score Cup',
+        'slug' => 'admin-no-score-cup',
+        'venue' => 'Metro Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Admin Home',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Admin Away',
+        'address' => 'Davao',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 1,
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertOk()
+        ->assertDontSee('Input Score')
+        ->assertDontSee('Open Scoring');
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertForbidden();
+
+    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+        'status' => 'completed',
+        'home_score' => 11,
+        'away_score' => 9,
+    ])->assertForbidden();
+
+    expect($match->fresh()->status)->toBe('scheduled');
+    expect($match->fresh()->home_score)->toBeNull();
+    expect($match->fresh()->away_score)->toBeNull();
 });
 
 test('scorekeepers cannot use admin-only tournament mutation routes', function () {
@@ -1966,8 +2039,9 @@ test('admin users can create tournament resources', function () {
     Storage::disk('public')->assertExists($crewMember->photo_path);
 });
 
-test('admin users can record live scoring plays and rebuild match totals', function () {
+test('scorekeepers can record live scoring plays and rebuild match totals', function () {
     $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
     $teamOwner = User::factory()->create();
 
     $tournament = Tournament::query()->create([
@@ -2042,12 +2116,12 @@ test('admin users can record live scoring plays and rebuild match totals', funct
         'status' => 'scheduled',
     ]);
 
-    $this->actingAs($admin);
+    $this->actingAs($scorekeeper);
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
-        ->assertSee('Live Scoring')
-        ->assertSee('Add Scoring Play')
+        ->assertSee('Game Score')
+        ->assertSee('Manual Score Entry')
         ->assertSee('Manila Storm')
         ->assertSee('Cebu Breakers');
 
@@ -2141,8 +2215,85 @@ test('admin users can record live scoring plays and rebuild match totals', funct
     )->toBe(1);
 });
 
-test('admin live scoring requires confirmation before replacing a manual scoreline', function () {
+test('scorekeepers can enter a completed game score manually from the scoring page', function () {
     $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Manual Result Cup',
+        'slug' => 'manual-result-cup',
+        'venue' => 'North Grounds',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Manual Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Manual Away',
+        'address' => 'Cebu City',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 4,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertSee('Manual Score Entry')
+        ->assertDontSee('Add Scoring Play');
+
+    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+        'status' => 'completed',
+        'home_score' => 11,
+        'away_score' => 8,
+        'notes' => 'Entered after the scheduled game finished.',
+    ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+
+    $match->refresh();
+
+    expect($match->status)->toBe('completed');
+    expect($match->home_score)->toBe(11);
+    expect($match->away_score)->toBe(8);
+    expect($match->notes)->toBe('Entered after the scheduled game finished.');
+});
+
+test('scorekeeper live scoring requires confirmation before replacing a manual scoreline', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
     $teamOwner = User::factory()->create();
 
     $tournament = Tournament::query()->create([
@@ -2201,7 +2352,7 @@ test('admin live scoring requires confirmation before replacing a manual scoreli
         'away_score' => 9,
     ]);
 
-    $this->actingAs($admin);
+    $this->actingAs($scorekeeper);
 
     $this->post(route('admin.tournaments.matches.scoring.store', ['tournament' => $tournament, 'match' => $match]), [
         'team_registration_id' => $homeRegistration->id,

@@ -184,6 +184,9 @@
                         @case('registrations-seeding-updated')
                             {{ __('Manual seeding updated successfully.') }}
                             @break
+                        @case('bracket-ranking-applied')
+                            {{ __('Bracket ranks saved from round robin standings.') }}
+                            @break
                         @case('match-created')
                             {{ __('Match added successfully.') }}
                             @break
@@ -800,6 +803,89 @@
                     </section>
                 @elseif ($selectedTab === 'teams')
                     <section class="space-y-6">
+                        @if ($bracketRankingPreview ?? null)
+                            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
+                                <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Bracket ranking') }}</h2>
+                                        <p class="mt-1 max-w-3xl text-sm text-zinc-600 dark:text-zinc-300">
+                                            {{ __('After round robin, ranks are computed from completed games (stage: round robin) within each bracket. Apply writes A1, A2, … onto each team for the public bracket tab and scheduling.') }}
+                                        </p>
+                                    </div>
+                                    @if ($isAdmin && ! empty($bracketRankingPreview['brackets']))
+                                        <form
+                                            method="POST"
+                                            action="{{ route('admin.tournaments.bracket-ranking.apply', $selectedTournament) }}"
+                                            class="shrink-0"
+                                        >
+                                            @csrf
+                                            <input type="hidden" name="redirect_route" value="admin.tournaments.index">
+                                            <input type="hidden" name="redirect_tab" value="teams">
+                                            <flux:button type="submit" variant="primary">
+                                                {{ __('Apply ranks to teams') }}
+                                            </flux:button>
+                                        </form>
+                                    @endif
+                                </div>
+
+                                @if (! empty($bracketRankingPreview['empty_reason']))
+                                    <div class="mt-4 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-700 dark:bg-zinc-950/60 dark:text-zinc-300">
+                                        {{ $bracketRankingPreview['empty_reason'] }}
+                                    </div>
+                                @else
+                                    <div class="mt-5 space-y-8">
+                                        @foreach ($bracketRankingPreview['brackets'] as $b)
+                                            <div>
+                                                <div class="flex flex-wrap items-baseline justify-between gap-2">
+                                                    <h3 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $b['code'] }}</h3>
+                                                    <span class="text-xs text-zinc-500 dark:text-zinc-400">
+                                                        {{ trans_choice('{1} :count completed game|[2,*] :count completed games', $b['completed_matches'], ['count' => $b['completed_matches']]) }}
+                                                        ·
+                                                        {{ trans_choice('{1} :count team|[2,*] :count teams', $b['registered_teams'], ['count' => $b['registered_teams']]) }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-3 overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-700">
+                                                    <table class="min-w-[40rem] w-full text-left text-sm">
+                                                        <thead class="border-b border-neutral-200 bg-zinc-50 text-xs font-semibold uppercase tracking-wide text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-400">
+                                                            <tr>
+                                                                <th class="px-4 py-2.5">{{ __('Rank') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('Team') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('Pld') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('W') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('L') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('D') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('Pts') }}</th>
+                                                                <th class="px-4 py-2.5">{{ __('GD') }}</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody class="divide-y divide-neutral-200 dark:divide-neutral-700">
+                                                            @foreach ($b['standings'] as $row)
+                                                                <tr class="bg-white dark:bg-zinc-900">
+                                                                    <td class="px-4 py-2.5 font-semibold text-zinc-900 dark:text-white">{{ $row['proposed_rank'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-800 dark:text-zinc-100">{{ $row['team_name'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['played'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['wins'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['losses'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['ties'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['points'] }}</td>
+                                                                    <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300">{{ $row['goal_difference'] }}</td>
+                                                                </tr>
+                                                            @endforeach
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                @if ($b['completed_matches'] === 0)
+                                                    <p class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                                                        {{ __('No completed round robin games for this bracket yet—ranks default to seed order.') }}
+                                                    </p>
+                                                @endif
+                                            </div>
+                                        @endforeach
+                                    </div>
+                                @endif
+                            </section>
+                        @endif
+
                         <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
                             <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                                 <div>
@@ -841,6 +927,7 @@
                                         </div>
                                         <div class="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500 dark:text-zinc-400">
                                             <span>{{ __('Bracket: :value', ['value' => $registration->bracket_code ?? '-']) }}</span>
+                                            <span>{{ __('RR rank: :value', ['value' => $registration->bracket_rank ?? '-']) }}</span>
                                             <span>{{ __('Pool: :value', ['value' => $registration->pool_name ?? '-']) }}</span>
                                         </div>
                                     </div>

@@ -4,9 +4,13 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Team;
+use App\Models\TeamMember;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
@@ -19,7 +23,6 @@ class TeamController extends Controller
     {
         $teams = Team::query()
             ->with([
-                'owner',
                 'members' => fn ($query) => $query
                     ->whereIn('role', ['captain', 'spirit_captain'])
                     ->orderByRaw("case when role = 'captain' then 0 when role = 'spirit_captain' then 1 else 2 end"),
@@ -34,14 +37,9 @@ class TeamController extends Controller
         $selectedTeam = $teams->firstWhere('id', $request->integer('selected_team'))
             ?? $teams->first();
 
-        $owners = User::query()
-            ->orderBy('name')
-            ->get(['id', 'name', 'email', 'role']);
-
         return view('admin.teams.index', [
             'teams' => $teams,
             'selectedTeam' => $selectedTeam,
-            'owners' => $owners,
         ]);
     }
 
@@ -52,7 +50,14 @@ class TeamController extends Controller
     {
         $validated = $request->validate($this->teamRules());
 
-        $team = Team::query()->create($this->buildTeamPayload($request, $validated));
+        $team = DB::transaction(function () use ($request, $validated): Team {
+            $captainUser = $this->createCaptainUser($validated);
+            $team = Team::query()->create($this->buildTeamPayload($request, $validated, ownerUserId: $captainUser->id));
+
+            $this->createLeadershipMembers($team, $validated, $captainUser->id);
+
+            return $team;
+        });
 
         return redirect()
             ->route('admin.teams.index', ['selected_team' => $team->id])
@@ -102,7 +107,6 @@ class TeamController extends Controller
         $field = fn (string $name): string => $prefix.$name;
 
         return [
-            $field('owner_user_id') => ['required', 'integer', 'exists:users,id'],
             $field('name') => ['required', 'string', 'max:255'],
             $field('address') => ['required', 'string', 'max:500'],
             $field('city') => ['required', 'string', 'max:255'],
@@ -111,6 +115,10 @@ class TeamController extends Controller
             $field('status') => ['required', Rule::in(['active', 'inactive', 'archived'])],
             $field('logo') => ['nullable', Rule::imageFile(allowSvg: true)->max(2048)],
             $field('remove_logo') => ['nullable', 'boolean'],
+            ...($prefix === '' ? [
+                'captain_name' => ['required', 'string', 'max:255'],
+                'spirit_captain_name' => ['nullable', 'string', 'max:255'],
+            ] : []),
         ];
     }
 
@@ -120,7 +128,7 @@ class TeamController extends Controller
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>
      */
-    protected function buildTeamPayload(Request $request, array $validated, ?Team $team = null, string $prefix = ''): array
+    protected function buildTeamPayload(Request $request, array $validated, ?Team $team = null, string $prefix = '', ?int $ownerUserId = null): array
     {
         $field = fn (string $name): string => $prefix.$name;
         $logoPath = $team?->logo_path;
@@ -135,7 +143,7 @@ class TeamController extends Controller
         }
 
         return [
-            'owner_user_id' => $validated[$field('owner_user_id')],
+            'owner_user_id' => $ownerUserId ?? $team?->owner_user_id,
             'name' => trim((string) $validated[$field('name')]),
             'address' => trim((string) $validated[$field('address')]),
             'city' => trim((string) $validated[$field('city')]),
@@ -154,5 +162,60 @@ class TeamController extends Controller
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * Add optional leadership roster entries during admin team creation.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    protected function createLeadershipMembers(Team $team, array $validated, int $captainUserId): void
+    {
+        foreach ([
+            'captain_name' => 'captain',
+            'spirit_captain_name' => 'spirit_captain',
+        ] as $field => $role) {
+            $name = $this->normalizeNullableString($validated[$field] ?? null);
+
+            if (! $name) {
+                continue;
+            }
+
+            TeamMember::query()->create([
+                'team_id' => $team->id,
+                'user_id' => $role === 'captain' ? $captainUserId : null,
+                'name' => $name,
+                'role' => $role,
+            ]);
+        }
+    }
+
+    /**
+     * Create a hidden captain account so teams still have a valid owner.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    protected function createCaptainUser(array $validated): User
+    {
+        $name = trim((string) $validated['captain_name']);
+        $baseSlug = Str::slug($validated['name'].' '.$name) ?: 'team-captain';
+        $email = "{$baseSlug}@distrack.test";
+        $suffix = 2;
+
+        while (User::query()->where('email', $email)->exists()) {
+            $email = "{$baseSlug}-{$suffix}@distrack.test";
+            $suffix++;
+        }
+
+        $user = User::query()->create([
+            'name' => $name,
+            'email' => $email,
+            'role' => User::ROLE_CAPTAIN,
+            'password' => Hash::make(Str::random(32)),
+        ]);
+
+        $user->forceFill(['email_verified_at' => now()])->save();
+
+        return $user;
     }
 }
