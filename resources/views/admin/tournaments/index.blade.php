@@ -3,6 +3,7 @@
     $minimumBracketTeamCount = \App\Http\Controllers\Admin\TournamentController::MINIMUM_BRACKET_TEAM_COUNT;
     $user = auth()->user();
     $isAdmin = $user->isAdmin();
+    $canEnterScores = $user->canEnterScores();
 
     $adminTabs = [
         ['key' => 'overview', 'label' => __('Seeding')],
@@ -148,7 +149,7 @@
             <flux:text class="mt-2 max-w-3xl">
                 {{ $isAdmin
                     ? __('Phase 1 admin tools now use a tabbed setup workspace: quick actions stay in modals, while the larger setup flow stays on-page.')
-                    : __('Open a tournament from the directory to review the match list and launch live scoring without full tournament setup access.') }}
+                    : __('Open a tournament from the directory to review the match list and enter final scores without full tournament setup access.') }}
             </flux:text>
 
             @if (session('status'))
@@ -274,7 +275,7 @@
                                 </a>
                             @endif
 
-                            @if ($firstScorableMatch)
+                            @if ($canEnterScores && $firstScorableMatch)
                                 <a
                                     href="{{ route('admin.tournaments.matches.scoring', ['tournament' => $selectedTournament, 'match' => $firstScorableMatch]) }}"
                                     wire:navigate
@@ -305,6 +306,14 @@
 
                 @if ($selectedTab === 'overview')
                     <section class="space-y-6">
+                        @include('admin.tournaments.partials.game-score-dashboard', [
+                            'selectedTournament' => $selectedTournament,
+                            'canEnterScores' => $canEnterScores,
+                            'canCreateMatches' => $canCreateMatches,
+                            'showAddMatchButton' => false,
+                            'showPublicLinks' => $selectedTournament->is_public,
+                        ])
+
                         <div data-seeding-overview-container>
                             @include('admin.tournaments.partials.seeding-overview', [
                                 'selectedTournament' => $selectedTournament,
@@ -391,7 +400,7 @@
                                 <div>
                                     <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Round Robin') }}</h2>
                                     <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                        {{ __('Round robin matches are created manually. Use the seeded brackets below as a guide, then add each matchup yourself.') }}
+                                        {{ __('Robins are created manually. Use the seeded brackets below as a guide, then add each pairing yourself.') }}
                                     </p>
                                 </div>
                             </div>
@@ -419,7 +428,7 @@
                                     <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Available fields for scheduling') }}</div>
                                 </div>
                                 <div class="min-w-[160px] flex-1 rounded-2xl border border-neutral-200 bg-gradient-to-br from-white to-zinc-50 px-4 py-4 shadow-sm dark:border-neutral-700 dark:from-zinc-900 dark:to-zinc-950">
-                                    <div class="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{{ __('Matches') }}</div>
+                                    <div class="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{{ __('Robins') }}</div>
                                     <div class="mt-3 text-3xl font-semibold text-zinc-900 dark:text-white">{{ $roundRobinMatches->count() }}</div>
                                     <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Round robin games already added') }}</div>
                                 </div>
@@ -446,221 +455,342 @@
 
                             @if ($seededBracketGroups->isEmpty())
                                 <p class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
-                                    {{ __('Teams are not seeded into brackets yet. You can still add manual round robin matches, but the bracket reference list will stay empty until seeding is done.') }}
+                                    {{ __('Teams are not seeded into brackets yet. You can still add manual robins, but the bracket reference list will stay empty until seeding is done.') }}
                                 </p>
                             @endif
                         </section>
 
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Pitches') }}</h2>
-                                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                        {{ __('Add pitches here, then review the round robin schedule assigned to each field and add new matchups directly inside the same pitch card.') }}
+                        @php
+                            $assignedRoundRobinMatches = $roundRobinMatches->filter(fn ($match) => $match->pitch_id);
+                            $totalRobinCount = $roundRobinMatches->count();
+                            $completedRobinCount = $roundRobinMatches->filter(fn ($match) => $match->status === 'completed')->count();
+                            $liveRobinCount = $roundRobinMatches->filter(fn ($match) => $match->status === 'live')->count();
+                            $scheduledRobinCount = $roundRobinMatches->filter(fn ($match) => $match->status === 'scheduled')->count();
+                        @endphp
+
+                        <section class="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-700 dark:bg-zinc-900">
+                            <div class="flex flex-col gap-4 border-b border-neutral-200 bg-gradient-to-br from-zinc-50 to-white px-6 py-5 sm:flex-row sm:items-start sm:justify-between dark:border-neutral-700 dark:from-zinc-900 dark:to-zinc-900">
+                                <div class="min-w-0">
+                                    <div class="flex items-center gap-2">
+                                        <span class="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-[#2f55b7]/10 text-[#2f55b7] dark:bg-[#2f55b7]/20 dark:text-blue-300">
+                                            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                                <rect x="3" y="4" width="18" height="16" rx="2" />
+                                                <path d="M3 10h18" />
+                                                <path d="M9 4v16" />
+                                                <path d="M15 4v16" />
+                                            </svg>
+                                        </span>
+                                        <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Round Robin Board') }}</h2>
+                                    </div>
+                                    <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                                        {{ __('Day 1 robins grouped by pitch.') }}
                                     </p>
+
+                                    <div class="mt-4 flex flex-wrap gap-2 text-xs">
+                                        <span class="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 py-1 font-medium text-zinc-700 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-200">
+                                            <span class="h-1.5 w-1.5 rounded-full bg-zinc-400"></span>
+                                            {{ trans_choice('{0} No robins|{1} :count robin total|[2,*] :count robins total', $totalRobinCount, ['count' => $totalRobinCount]) }}
+                                        </span>
+                                        @if ($scheduledRobinCount > 0)
+                                            <span class="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                                                <span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
+                                                {{ __(':count scheduled', ['count' => $scheduledRobinCount]) }}
+                                            </span>
+                                        @endif
+                                        @if ($liveRobinCount > 0)
+                                            <span class="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                                                <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500"></span>
+                                                {{ __(':count live', ['count' => $liveRobinCount]) }}
+                                            </span>
+                                        @endif
+                                        @if ($completedRobinCount > 0)
+                                            <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200">
+                                                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                                                {{ __(':count completed', ['count' => $completedRobinCount]) }}
+                                            </span>
+                                        @endif
+                                    </div>
                                 </div>
 
-                                <flux:modal.trigger name="setup-add-pitch-modal-{{ $selectedTournament->id }}">
-                                    <flux:button variant="primary">
-                                        {{ __('Add Pitch') }}
-                                    </flux:button>
-                                </flux:modal.trigger>
-                            </div>
+                                <div class="flex flex-wrap gap-2">
+                                    <flux:modal.trigger name="setup-add-pitch-modal-{{ $selectedTournament->id }}">
+                                        <flux:button variant="ghost">
+                                            {{ __('Add Pitch') }}
+                                        </flux:button>
+                                    </flux:modal.trigger>
 
-                            <div class="mt-4 flex items-center justify-between gap-4">
-                                <div class="text-sm text-zinc-600 dark:text-zinc-300">
-                                    {{ __('Pitches available for this tournament') }}
+                                    <flux:modal.trigger name="setup-add-round-robin-match-modal-{{ $selectedTournament->id }}">
+                                        <flux:button variant="primary" :disabled="! $canCreateMatches">
+                                            {{ __('Add Robin') }}
+                                        </flux:button>
+                                    </flux:modal.trigger>
                                 </div>
-                                <span class="rounded-md border border-neutral-200 px-3 py-1 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                    {{ trans_choice('{0} No pitches|{1} :count pitch|[2,*] :count pitches', $pitchCount, ['count' => $pitchCount]) }}
-                                </span>
                             </div>
 
-                            <div class="mt-3 space-y-3">
-                                @forelse ($selectedTournament->pitches as $pitch)
+                            <div class="min-h-[26rem] overflow-x-auto bg-zinc-50/40 px-6 py-8 dark:bg-zinc-950/40">
+                                <div class="mx-auto mb-10 flex max-w-xs items-center gap-3">
+                                    <span class="h-px flex-1 bg-gradient-to-r from-transparent to-neutral-300 dark:to-neutral-700"></span>
+                                    <span class="rounded-full bg-zinc-900 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-white dark:bg-white dark:text-zinc-900">
+                                        {{ __('Day 1') }}
+                                    </span>
+                                    <span class="h-px flex-1 bg-gradient-to-l from-transparent to-neutral-300 dark:to-neutral-700"></span>
+                                </div>
+
+                                @if ($selectedTournament->pitches->isNotEmpty())
                                     @php
-                                        $pitchMatches = $roundRobinMatchesByPitch->get((string) $pitch->id, collect());
+                                        $pitchesList = $selectedTournament->pitches;
+                                        $pitchCount = $pitchesList->count();
+                                        $timeSlotKey = function ($scheduledAt) {
+                                            return $scheduledAt ? $scheduledAt->format('Y-m-d H:i') : 'unscheduled';
+                                        };
+
+                                        $timeSlotMap = [];
+                                        $matchesByTimeAndPitch = [];
+
+                                        foreach ($assignedRoundRobinMatches as $assignedMatch) {
+                                            $slotKey = $timeSlotKey($assignedMatch->scheduled_at);
+                                            $timeSlotMap[$slotKey] = $assignedMatch->scheduled_at;
+                                            $matchesByTimeAndPitch[$slotKey][$assignedMatch->pitch_id][] = $assignedMatch;
+                                        }
+
+                                        if (empty($timeSlotMap)) {
+                                            $timeSlotMap = ['unscheduled' => null];
+                                        }
+
+                                        uksort($timeSlotMap, function ($a, $b) {
+                                            if ($a === 'unscheduled') return 1;
+                                            if ($b === 'unscheduled') return -1;
+                                            return strcmp($a, $b);
+                                        });
+
+                                        $gridTemplate = '7rem repeat('.max(1, $pitchCount).', minmax(12rem, 1fr))';
                                     @endphp
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="flex flex-wrap items-start justify-between gap-3">
-                                            <div>
-                                                <div class="font-semibold text-zinc-900 dark:text-white">{{ $pitch->name }}</div>
-                                                <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                                    {{ $pitch->location ?: __('No location provided') }}
-                                                </div>
-                                            </div>
-                                            <div class="flex flex-wrap items-center gap-2">
-                                                <span class="text-right text-xs text-zinc-500 dark:text-zinc-400">
-                                                    {{ __('Order: :order', ['order' => $pitch->sort_order]) }}
-                                                </span>
 
-                                                <flux:modal.trigger name="setup-add-round-robin-match-modal-{{ $selectedTournament->id }}-pitch-{{ $pitch->id }}">
-                                                    <flux:button variant="primary" size="sm" :disabled="! $canCreateMatches">
-                                                        {{ __('Add Round Robin Here') }}
-                                                    </flux:button>
-                                                </flux:modal.trigger>
-                                            </div>
-                                        </div>
-
-                                        <div class="mt-3 flex flex-wrap gap-2">
-                                            <flux:modal.trigger name="setup-edit-pitch-modal-{{ $pitch->id }}">
-                                                <flux:button variant="ghost" size="sm">
-                                                    {{ __('Edit') }}
-                                                </flux:button>
-                                            </flux:modal.trigger>
-
-                                            <form
-                                                method="POST"
-                                                action="{{ route('admin.tournaments.pitches.destroy', ['pitch' => $pitch->id]) }}"
-                                                onsubmit="return confirm('{{ __('Delete this pitch? Matches scheduled on it will lose the pitch assignment.') }}')"
-                                            >
-                                                @csrf
-                                                @method('DELETE')
-                                                <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-                                                <input type="hidden" name="redirect_tab" value="round-robin">
-
-                                                <button
-                                                    type="submit"
-                                                    class="rounded-full border border-red-200 px-3 py-1 text-[11px] font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                                                >
-                                                    {{ __('Delete') }}
-                                                </button>
-                                            </form>
-                                        </div>
-
-                                        <div class="mt-4 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-700 dark:bg-zinc-900">
-                                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                                <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Pitch Schedule') }}</div>
-                                                <span class="rounded-md border border-neutral-200 px-3 py-1 text-xs text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                                    {{ trans_choice('{0} No matches assigned|{1} :count match assigned|[2,*] :count matches assigned', $pitchMatches->count(), ['count' => $pitchMatches->count()]) }}
-                                                </span>
-                                            </div>
-
-                                            <div class="mt-3 space-y-2">
-                                                @forelse ($pitchMatches as $match)
-                                                    <div class="rounded-lg border border-neutral-200 bg-zinc-50 p-3 dark:border-neutral-700 dark:bg-zinc-950">
-                                                        <div class="flex flex-wrap items-start justify-between gap-3">
-                                                            <div>
-                                                                <div class="font-medium text-zinc-900 dark:text-white">
-                                                                    {{ $match->homeRegistration?->team->name ?? __('TBD') }}
-                                                                    {{ __('vs') }}
-                                                                    {{ $match->awayRegistration?->team->name ?? __('TBD') }}
-                                                                </div>
-                                                                <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                                                                    {{ $match->round_label ?: __('Round Robin') }}
-                                                                    {{ ' | '.__('Match #: :value', ['value' => $match->match_number ?? '-']) }}
-                                                                </div>
-                                                                <div class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                                                                    {{ $match->scheduled_at
-                                                                        ? __('Scheduled :time', ['time' => $match->scheduled_at->format('M j, Y g:i A')])
-                                                                        : __('No schedule yet.') }}
-                                                                </div>
-                                                            </div>
-
-                                                            <div class="flex flex-wrap gap-2">
-                                                                <flux:modal.trigger name="setup-edit-round-robin-match-modal-{{ $match->id }}">
-                                                                    <flux:button variant="ghost" size="sm">
-                                                                        {{ $match->scheduled_at ? __('Edit Schedule') : __('Set Schedule') }}
-                                                                    </flux:button>
-                                                                </flux:modal.trigger>
-
-                                                                <form
-                                                                    method="POST"
-                                                                    action="{{ route('admin.tournaments.matches.destroy', ['match' => $match->id]) }}"
-                                                                    onsubmit="return confirm('{{ __('Delete this round robin match? This cannot be undone.') }}')"
-                                                                >
-                                                                    @csrf
-                                                                    @method('DELETE')
-                                                                    <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-                                                                    <input type="hidden" name="redirect_tab" value="round-robin">
-
-                                                                    <button
-                                                                        type="submit"
-                                                                        class="rounded-full border border-red-200 px-3 py-1 text-[11px] font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                                                                    >
-                                                                        {{ __('Delete Match') }}
-                                                                    </button>
-                                                                </form>
+                                    <div class="min-w-[64rem]">
+                                        <div class="grid gap-3" style="grid-template-columns: {{ $gridTemplate }};">
+                                            <div></div>
+                                            @foreach ($pitchesList as $pitch)
+                                                @php
+                                                    $pitchLabel = str($pitch->name)->lower()->startsWith('pitch') ? $pitch->name : __('Pitch :name', ['name' => $pitch->name]);
+                                                    $pitchMatchCount = $roundRobinMatchesByPitch->get((string) $pitch->id, collect())->count();
+                                                @endphp
+                                                <div class="flex items-center justify-between gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-zinc-900">
+                                                    <div class="flex min-w-0 items-center gap-2">
+                                                        <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#2f55b7]/10 text-[#2f55b7] dark:bg-[#2f55b7]/20 dark:text-blue-300">
+                                                            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                                <path d="M12 21s-7-6.5-7-12a7 7 0 1 1 14 0c0 5.5-7 12-7 12Z" />
+                                                                <circle cx="12" cy="9" r="2.5" />
+                                                            </svg>
+                                                        </span>
+                                                        <div class="min-w-0">
+                                                            <div class="truncate text-xs font-semibold uppercase tracking-wider text-zinc-900 dark:text-white">{{ $pitchLabel }}</div>
+                                                            <div class="text-[10px] text-zinc-500 dark:text-zinc-400">
+                                                                {{ trans_choice('{0} No robins|{1} :count robin|[2,*] :count robins', $pitchMatchCount, ['count' => $pitchMatchCount]) }}
                                                             </div>
                                                         </div>
                                                     </div>
-                                                @empty
-                                                    <div class="rounded-lg border border-dashed border-neutral-300 p-3 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                                        {{ __('No round robin matches assigned to this pitch yet.') }}
+                                                    <flux:modal.trigger name="setup-add-round-robin-match-modal-{{ $selectedTournament->id }}-pitch-{{ $pitch->id }}">
+                                                        <button
+                                                            type="button"
+                                                            @disabled(! $canCreateMatches)
+                                                            class="inline-flex shrink-0 items-center gap-1 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 transition hover:border-[#2f55b7] hover:text-[#2f55b7] disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                                                        >
+                                                            <svg class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                                <path d="M10 4a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 10 4Z" />
+                                                            </svg>
+                                                            {{ __('Add') }}
+                                                        </button>
+                                                    </flux:modal.trigger>
+                                                </div>
+                                            @endforeach
+                                        </div>
+
+                                        <div class="mt-3 grid gap-3" style="grid-template-columns: {{ $gridTemplate }};">
+                                            @foreach ($timeSlotMap as $slotKey => $slotDateTime)
+                                                <div class="flex items-center justify-end pr-2 text-right">
+                                                    @if ($slotDateTime)
+                                                        <div>
+                                                            <div class="text-sm font-semibold text-zinc-900 dark:text-white">
+                                                                {{ $slotDateTime->format('g:i A') }}
+                                                            </div>
+                                                            <div class="text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                                                                {{ $slotDateTime->format('M j') }}
+                                                            </div>
+                                                        </div>
+                                                    @else
+                                                        <span class="rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                                                            {{ __('TBD') }}
+                                                        </span>
+                                                    @endif
+                                                </div>
+
+                                                @foreach ($pitchesList as $pitch)
+                                                    @php
+                                                        $cellMatches = $matchesByTimeAndPitch[$slotKey][$pitch->id] ?? [];
+                                                    @endphp
+
+                                                    <div class="flex flex-col gap-2">
+                                                        @forelse ($cellMatches as $match)
+                                                            @php
+                                                                $homeReg = $match->homeRegistration;
+                                                                $awayReg = $match->awayRegistration;
+                                                                $homeName = $homeReg?->team?->name ?? __('TBD');
+                                                                $awayName = $awayReg?->team?->name ?? __('TBD');
+                                                                $homeSeed = $homeReg?->seed_number;
+                                                                $awaySeed = $awayReg?->seed_number;
+                                                                $matchStatus = $match->status ?? 'scheduled';
+                                                                $hasResult = $matchStatus === 'completed' && $match->home_score !== null && $match->away_score !== null;
+                                                                $homeWins = $hasResult && $match->home_score > $match->away_score;
+                                                                $awayWins = $hasResult && $match->away_score > $match->home_score;
+                                                                $statusStyles = match ($matchStatus) {
+                                                                    'completed' => 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
+                                                                    'live' => 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
+                                                                    default => 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300',
+                                                                };
+                                                                $statusLabel = str($matchStatus)->headline();
+                                                                $robinLabel = $match->round_label ?: __('Robin :number', ['number' => $match->match_number ?? '—']);
+                                                            @endphp
+
+                                                            <div class="overflow-hidden rounded-xl border border-neutral-200 bg-white transition hover:border-[#2f55b7]/60 hover:shadow-md dark:border-neutral-700 dark:bg-zinc-950 dark:hover:border-blue-400/60">
+                                                                <div class="flex items-center justify-between gap-2 border-b border-neutral-200 bg-zinc-50/60 px-3 py-1.5 dark:border-neutral-700 dark:bg-zinc-900/60">
+                                                                    <span class="truncate text-[11px] font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                                                                        {{ $robinLabel }}
+                                                                    </span>
+                                                                    <span class="inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider {{ $statusStyles }}">
+                                                                        @if ($matchStatus === 'live')
+                                                                            <span class="mr-1 h-1.5 w-1.5 animate-pulse self-center rounded-full bg-amber-500"></span>
+                                                                        @endif
+                                                                        {{ $statusLabel }}
+                                                                    </span>
+                                                                </div>
+
+                                                                <div class="px-3 py-3">
+                                                                    <div class="flex items-center justify-between gap-2 {{ $homeWins ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-700 dark:text-zinc-200' }}">
+                                                                        <div class="flex min-w-0 items-center gap-2">
+                                                                            @if ($homeSeed)
+                                                                                <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-[#2f55b7]/10 px-1 text-[10px] font-bold text-[#2f55b7] dark:bg-[#2f55b7]/20 dark:text-blue-300">
+                                                                                    {{ $homeSeed }}
+                                                                                </span>
+                                                                            @endif
+                                                                            <span class="truncate text-sm">{{ $homeName }}</span>
+                                                                        </div>
+                                                                        @if ($hasResult)
+                                                                            <span class="shrink-0 text-base font-bold tabular-nums {{ $homeWins ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400' }}">{{ $match->home_score }}</span>
+                                                                        @endif
+                                                                    </div>
+
+                                                                    <div class="my-1 flex items-center gap-2">
+                                                                        <span class="h-px flex-1 bg-neutral-200 dark:bg-neutral-700"></span>
+                                                                        <span class="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-400 dark:text-zinc-500">{{ __('vs') }}</span>
+                                                                        <span class="h-px flex-1 bg-neutral-200 dark:bg-neutral-700"></span>
+                                                                    </div>
+
+                                                                    <div class="flex items-center justify-between gap-2 {{ $awayWins ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-700 dark:text-zinc-200' }}">
+                                                                        <div class="flex min-w-0 items-center gap-2">
+                                                                            @if ($awaySeed)
+                                                                                <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-amber-500/10 px-1 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                                                                                    {{ $awaySeed }}
+                                                                                </span>
+                                                                            @endif
+                                                                            <span class="truncate text-sm">{{ $awayName }}</span>
+                                                                        </div>
+                                                                        @if ($hasResult)
+                                                                            <span class="shrink-0 text-base font-bold tabular-nums {{ $awayWins ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400' }}">{{ $match->away_score }}</span>
+                                                                        @endif
+                                                                    </div>
+                                                                </div>
+
+                                                                <div class="flex gap-1 border-t border-neutral-200 bg-zinc-50/60 px-2 py-1.5 dark:border-neutral-700 dark:bg-zinc-900/60">
+                                                                    @if ($canEnterScores && $homeReg && $awayReg)
+                                                                        <a
+                                                                            href="{{ route('admin.tournaments.matches.scoring', ['tournament' => $selectedTournament, 'match' => $match]) }}"
+                                                                            wire:navigate
+                                                                            class="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-[#2f55b7] px-2 py-1.5 text-[11px] font-semibold text-white transition hover:bg-[#244591]"
+                                                                        >
+                                                                            <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                                                <path d="M10 2a.75.75 0 0 1 .75.75v.5h2.5a1.75 1.75 0 0 1 1.75 1.75V16.5A1.75 1.75 0 0 1 13.25 18.25H6.75A1.75 1.75 0 0 1 5 16.5V5a1.75 1.75 0 0 1 1.75-1.75h2.5v-.5A.75.75 0 0 1 10 2ZM7.5 8.5a.75.75 0 0 0 0 1.5h5a.75.75 0 0 0 0-1.5h-5Zm0 3a.75.75 0 0 0 0 1.5h5a.75.75 0 0 0 0-1.5h-5Z" />
+                                                                            </svg>
+                                                                            {{ __('Score') }}
+                                                                        </a>
+                                                                    @endif
+
+                                                                    <flux:modal.trigger name="setup-edit-round-robin-match-modal-{{ $match->id }}">
+                                                                        <button type="button" class="inline-flex flex-1 items-center justify-center gap-1 rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                                                                            <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                                                <path d="M2.695 14.763l-1.262 3.154a.5.5 0 0 0 .65.65l3.155-1.262a4 4 0 0 0 1.343-.885L17.5 5.5a2.121 2.121 0 0 0-3-3L3.58 13.42a4 4 0 0 0-.885 1.343Z" />
+                                                                            </svg>
+                                                                            {{ __('Edit') }}
+                                                                        </button>
+                                                                    </flux:modal.trigger>
+                                                                </div>
+                                                            </div>
+                                                        @empty
+                                                            <flux:modal.trigger name="setup-add-round-robin-match-modal-{{ $selectedTournament->id }}-pitch-{{ $pitch->id }}">
+                                                                <button
+                                                                    type="button"
+                                                                    @disabled(! $canCreateMatches)
+                                                                    class="flex h-full min-h-24 w-full flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-neutral-300 px-2 py-4 text-center text-[10px] text-zinc-400 transition hover:border-[#2f55b7] hover:bg-[#2f55b7]/5 hover:text-[#2f55b7] disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:text-zinc-500 dark:hover:border-blue-400 dark:hover:bg-blue-500/5 dark:hover:text-blue-300"
+                                                                >
+                                                                    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                                        <path d="M10 4a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 10 4Z" />
+                                                                    </svg>
+                                                                </button>
+                                                            </flux:modal.trigger>
+                                                        @endforelse
                                                     </div>
-                                                @endforelse
-                                            </div>
+                                                @endforeach
+                                            @endforeach
                                         </div>
                                     </div>
-                                @empty
-                                    <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                        {{ __('No pitches yet. Manual round robin matches can still be created without a field assignment, or you can add a pitch first.') }}
+                                @else
+                                    <div class="flex min-h-72 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-white px-6 py-10 text-center dark:border-neutral-700 dark:bg-zinc-900">
+                                        <span class="inline-flex h-12 w-12 items-center justify-center rounded-full bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                                            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                                <path d="M12 21s-7-6.5-7-12a7 7 0 1 1 14 0c0 5.5-7 12-7 12Z" />
+                                                <circle cx="12" cy="9" r="2.5" />
+                                            </svg>
+                                        </span>
+                                        <div>
+                                            <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('No pitches yet') }}</div>
+                                            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Add a pitch to start building the Day 1 board.') }}</p>
+                                        </div>
+                                        <flux:modal.trigger name="setup-add-pitch-modal-{{ $selectedTournament->id }}">
+                                            <flux:button variant="primary" size="sm">
+                                                {{ __('Add Pitch') }}
+                                            </flux:button>
+                                        </flux:modal.trigger>
                                     </div>
-                                @endforelse
+                                @endif
                             </div>
 
                             @if ($unassignedRoundRobinMatches->isNotEmpty())
-                                <div class="mt-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/70 p-4 dark:border-amber-900/70 dark:bg-amber-950/20">
-                                    <div class="flex flex-wrap items-center justify-between gap-3">
-                                        <div>
-                                            <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Unassigned Matches') }}</div>
-                                            <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                                {{ __('These round robin matches still need a pitch and schedule assignment.') }}
-                                            </div>
+                                <div class="border-t border-amber-200 bg-amber-50/70 px-6 py-4 dark:border-amber-900/70 dark:bg-amber-950/20">
+                                    <div class="flex items-center gap-2">
+                                        <svg class="h-4 w-4 text-amber-600 dark:text-amber-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 6a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 6Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+                                        </svg>
+                                        <div class="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                                            {{ __('Unassigned Robins') }}
+                                            <span class="ml-1 text-xs font-normal text-amber-700 dark:text-amber-300">
+                                                ({{ trans_choice('{1} :count robin needs a pitch|[2,*] :count robins need a pitch', $unassignedRoundRobinMatches->count(), ['count' => $unassignedRoundRobinMatches->count()]) }})
+                                            </span>
                                         </div>
-                                        <span class="rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 dark:border-amber-900/70 dark:text-amber-300">
-                                            {{ trans_choice('{1} :count match waiting|[2,*] :count matches waiting', $unassignedRoundRobinMatches->count(), ['count' => $unassignedRoundRobinMatches->count()]) }}
-                                        </span>
                                     </div>
-
-                                    <div class="mt-3 space-y-2">
+                                    <div class="mt-3 flex flex-wrap gap-2">
                                         @foreach ($unassignedRoundRobinMatches as $match)
-                                            <div class="rounded-lg border border-amber-200 bg-white p-3 dark:border-amber-900/70 dark:bg-zinc-900">
-                                                <div class="flex flex-wrap items-start justify-between gap-3">
-                                                    <div>
-                                                        <div class="font-medium text-zinc-900 dark:text-white">
-                                                            {{ $match->homeRegistration?->team->name ?? __('TBD') }}
-                                                            {{ __('vs') }}
-                                                            {{ $match->awayRegistration?->team->name ?? __('TBD') }}
-                                                        </div>
-                                                        <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                                                            {{ $match->round_label ?: __('Round Robin') }}
-                                                            {{ ' | '.__('Match #: :value', ['value' => $match->match_number ?? '-']) }}
-                                                        </div>
-                                                        <div class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                                                            {{ $match->scheduled_at
-                                                                ? __('Scheduled :time without a pitch', ['time' => $match->scheduled_at->format('M j, Y g:i A')])
-                                                                : __('No pitch or schedule assigned yet.') }}
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="flex flex-wrap gap-2">
-                                                        <flux:modal.trigger name="setup-edit-round-robin-match-modal-{{ $match->id }}">
-                                                            <flux:button variant="ghost" size="sm">
-                                                                {{ __('Assign Pitch & Schedule') }}
-                                                            </flux:button>
-                                                        </flux:modal.trigger>
-
-                                                        <form
-                                                            method="POST"
-                                                            action="{{ route('admin.tournaments.matches.destroy', ['match' => $match->id]) }}"
-                                                            onsubmit="return confirm('{{ __('Delete this round robin match? This cannot be undone.') }}')"
-                                                        >
-                                                            @csrf
-                                                            @method('DELETE')
-                                                            <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-                                                            <input type="hidden" name="redirect_tab" value="round-robin">
-
-                                                            <button
-                                                                type="submit"
-                                                                class="rounded-full border border-red-200 px-3 py-1 text-[11px] font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                                                            >
-                                                                {{ __('Delete Match') }}
-                                                            </button>
-                                                        </form>
-                                                    </div>
-                                                </div>
-                                            </div>
+                                            <flux:modal.trigger name="setup-edit-round-robin-match-modal-{{ $match->id }}">
+                                                <button
+                                                    type="button"
+                                                    class="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-zinc-800 transition hover:border-amber-400 hover:bg-amber-50 dark:border-amber-900/70 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-amber-950/40"
+                                                >
+                                                    <span class="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                                                        {{ $match->round_label ?: __('Robin :number', ['number' => $match->match_number ?? '—']) }}
+                                                    </span>
+                                                    <span class="font-medium">{{ $match->homeRegistration?->team->name ?? __('TBD') }}</span>
+                                                    <span class="text-xs text-zinc-400 dark:text-zinc-500">{{ __('vs') }}</span>
+                                                    <span class="font-medium">{{ $match->awayRegistration?->team->name ?? __('TBD') }}</span>
+                                                </button>
+                                            </flux:modal.trigger>
                                         @endforeach
                                     </div>
                                 </div>
@@ -804,106 +934,13 @@
                     ])
                 @elseif ($selectedTab === 'matches')
                     <section class="space-y-6">
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Matches') }}</h2>
-                                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                        {{ __('Scheduling remains on-page while the quick add flow stays in a modal. Live scoring still opens as a dedicated workflow.') }}
-                                    </p>
-                                </div>
-
-                                <flux:modal.trigger name="setup-add-match-modal-{{ $selectedTournament->id }}">
-                                    <flux:button variant="primary" :disabled="! $canCreateMatches">
-                                        {{ __('Add Match') }}
-                                    </flux:button>
-                                </flux:modal.trigger>
-                            </div>
-
-                            @unless ($canCreateMatches)
-                                <p class="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-                                    {{ __('Register at least two teams before creating a match.') }}
-                                </p>
-                            @endunless
-
-                            <div class="mt-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Frisbee Stage Keys') }}</div>
-                                <div class="mt-3 flex flex-wrap gap-2">
-                                    @foreach ($frisbeeStageOptions as $option)
-                                        <span class="inline-flex items-center rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
-                                            {{ $option['label'] }}
-                                        </span>
-                                    @endforeach
-                                </div>
-                            </div>
-                        </section>
-
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="mb-4">
-                                <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Match Schedule') }}</h2>
-                            </div>
-
-                            <div class="space-y-3">
-                                @forelse ($selectedTournament->matches as $match)
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="flex items-start justify-between gap-3">
-                                            <div>
-                                                <div class="font-semibold text-zinc-900 dark:text-white">
-                                                    {{ $match->homeRegistration?->team->name ?? __('TBD') }}
-                                                    {{ __('vs') }}
-                                                    {{ $match->awayRegistration?->team->name ?? __('TBD') }}
-                                                </div>
-                                                <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                                    {{ str($match->stage)->replace('_', ' ')->headline() }}
-                                                    @if ($match->round_label)
-                                                        {{ ' | '.$match->round_label }}
-                                                    @endif
-                                                </div>
-                                            </div>
-                                            <div class="text-right text-xs text-zinc-500 dark:text-zinc-400">
-                                                <div>{{ __('Status: :status', ['status' => str($match->status)->headline()]) }}</div>
-                                                @if (! is_null($match->home_score) && ! is_null($match->away_score))
-                                                    <div class="mt-1">{{ $match->home_score }} - {{ $match->away_score }}</div>
-                                                @endif
-                                            </div>
-                                        </div>
-
-                                        <div class="mt-3 flex flex-wrap gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-                                            <span>{{ __('Match #: :value', ['value' => $match->match_number ?? '-']) }}</span>
-                                            <span>{{ __('Pitch: :value', ['value' => $match->pitch?->name ?? '-']) }}</span>
-                                            <span>{{ __('Time: :value', ['value' => $match->scheduled_at?->format('M j, Y g:i A') ?? 'TBD']) }}</span>
-                                        </div>
-
-                                        <div class="mt-4 flex flex-wrap gap-2">
-                                            @if ($match->homeRegistration && $match->awayRegistration)
-                                                <a
-                                                    href="{{ route('admin.tournaments.matches.scoring', ['tournament' => $selectedTournament, 'match' => $match]) }}"
-                                                    wire:navigate
-                                                    class="inline-flex items-center justify-center rounded-lg border border-[#c8d7f8] bg-[#e9f0ff] px-3 py-2 text-sm font-medium text-[#2f55b7] transition hover:border-[#9fb7f2] hover:bg-[#dce8ff]"
-                                                >
-                                                    {{ __('Live Scoring') }}
-                                                </a>
-                                            @endif
-
-                                            @if ($selectedTournament->is_public)
-                                                <a
-                                                    href="{{ route('tournaments.matches.show', ['tournament' => $selectedTournament, 'match' => $match]) }}"
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                                                >
-                                                    {{ __('Public Match') }}
-                                                </a>
-                                            @endif
-                                        </div>
-                                    </div>
-                                @empty
-                                    <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                        {{ __('No matches have been added yet.') }}
-                                    </div>
-                                @endforelse
-                            </div>
-                        </section>
+                        @include('admin.tournaments.partials.game-score-dashboard', [
+                            'selectedTournament' => $selectedTournament,
+                            'canEnterScores' => $canEnterScores,
+                            'canCreateMatches' => $canCreateMatches,
+                            'showAddMatchButton' => true,
+                            'showPublicLinks' => $selectedTournament->is_public,
+                        ])
                     </section>
                 @elseif ($selectedTab === 'crew')
                     <section class="space-y-6">
@@ -1023,6 +1060,10 @@
                     'stageOptions' => $frisbeeStageOptions,
                 ])
 
+                @include('admin.tournaments.partials.setup-add-round-robin-match-modal', [
+                    'tournament' => $selectedTournament,
+                ])
+
                 @foreach ($selectedTournament->pitches as $pitch)
                     @include('admin.tournaments.partials.setup-add-round-robin-match-modal', [
                         'tournament' => $selectedTournament,
@@ -1047,7 +1088,7 @@
                         <div>
                             <flux:heading size="xl">{{ __('Tournament Scoring Console') }}</flux:heading>
                             <flux:text class="mt-2 max-w-3xl">
-                                {{ __('Open the match list below and launch live scoring without full tournament setup access.') }}
+                                {{ __('Open the match list below and enter final scores without full tournament setup access.') }}
                             </flux:text>
                             <div class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
                                 {{ $selectedTournament->name }}
@@ -1069,62 +1110,13 @@
                     </div>
                 </section>
 
-                <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                    <div class="mb-4">
-                        <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Matches Ready for Scoring') }}</h2>
-                        <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Use the live scoring link on each match card to record scorers, assisters, minutes, and automatic totals.') }}</p>
-                    </div>
-
-                    <div class="space-y-3">
-                        @forelse ($selectedTournament->matches as $match)
-                            <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                <div class="flex items-start justify-between gap-3">
-                                    <div>
-                                        <div class="font-semibold text-zinc-900 dark:text-white">
-                                            {{ $match->homeRegistration?->team->name ?? __('TBD') }}
-                                            {{ __('vs') }}
-                                            {{ $match->awayRegistration?->team->name ?? __('TBD') }}
-                                        </div>
-                                        <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                            {{ str($match->stage)->replace('_', ' ')->headline() }}
-                                            @if ($match->round_label)
-                                                {{ ' | '.$match->round_label }}
-                                            @endif
-                                        </div>
-                                    </div>
-                                    <div class="text-right text-xs text-zinc-500 dark:text-zinc-400">
-                                        <div>{{ __('Status: :status', ['status' => str($match->status)->headline()]) }}</div>
-                                        @if (! is_null($match->home_score) && ! is_null($match->away_score))
-                                            <div class="mt-1">{{ $match->home_score }} - {{ $match->away_score }}</div>
-                                        @endif
-                                    </div>
-                                </div>
-
-                                <div class="mt-3 flex flex-wrap gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-                                    <span>{{ __('Match #: :value', ['value' => $match->match_number ?? '-']) }}</span>
-                                    <span>{{ __('Pitch: :value', ['value' => $match->pitch?->name ?? '-']) }}</span>
-                                    <span>{{ __('Time: :value', ['value' => $match->scheduled_at?->format('M j, Y g:i A') ?? 'TBD']) }}</span>
-                                </div>
-
-                                <div class="mt-4 flex flex-wrap gap-2">
-                                    @if ($match->homeRegistration && $match->awayRegistration)
-                                        <a
-                                            href="{{ route('admin.tournaments.matches.scoring', ['tournament' => $selectedTournament, 'match' => $match]) }}"
-                                            wire:navigate
-                                            class="inline-flex items-center justify-center rounded-lg border border-[#c8d7f8] bg-[#e9f0ff] px-3 py-2 text-sm font-medium text-[#2f55b7] transition hover:border-[#9fb7f2] hover:bg-[#dce8ff]"
-                                        >
-                                            {{ __('Live Scoring') }}
-                                        </a>
-                                    @endif
-                                </div>
-                            </div>
-                        @empty
-                            <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                {{ __('No matches have been added yet.') }}
-                            </div>
-                        @endforelse
-                    </div>
-                </section>
+                @include('admin.tournaments.partials.game-score-dashboard', [
+                    'selectedTournament' => $selectedTournament,
+                    'canEnterScores' => $canEnterScores,
+                    'canCreateMatches' => $canCreateMatches,
+                    'showAddMatchButton' => false,
+                    'showPublicLinks' => false,
+                ])
             @endif
         @else
             <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
@@ -1150,7 +1142,7 @@
                 @else
                     {{ $isAdmin
                         ? __('Create a tournament above to unlock pitch setup, team registration, and the rest of the setup workflow.')
-                        : __('An administrator needs to create a tournament before live scoring can begin.') }}
+                        : __('An administrator needs to create a tournament before score entry can begin.') }}
                 @endif
             </section>
         @endif

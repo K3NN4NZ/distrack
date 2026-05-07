@@ -16,6 +16,7 @@
         'live' => 'bg-[#2f55b7] text-white',
         default => 'bg-zinc-100 text-zinc-700',
     };
+    $scoreInputVisible = $match->status === 'completed';
     $homeStats = $match->playerStats
         ->filter(fn ($stat) => $stat->teamMember?->team_id === $homeTeam?->id)
         ->values();
@@ -28,7 +29,7 @@
     $initialAssisterId = (string) old('assist_team_member_id');
 @endphp
 
-<x-layouts::app :title="__('Live Scoring')">
+<x-layouts::app :title="__('Game Score')">
     <div class="space-y-6">
         <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -44,9 +45,9 @@
                         {{ __('Back to Tournament Setup') }}
                     </a>
 
-                    <h1 class="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-white">{{ __('Live Scoring') }}</h1>
+                    <h1 class="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-white">{{ __('Game Score') }}</h1>
                     <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                        {{ __('Log each scoring play with the scorer, optional assister, and minute. The match scoreline and player totals update automatically from the timeline.') }}
+                        {{ __('Open the scheduled game after play, enter the final score manually, and mark it completed.') }}
                     </p>
                     <div class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
                         {{ $tournament->name }}
@@ -106,11 +107,18 @@
                     <div class="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{{ $homeTeam?->locationLabel() ?: __('Awaiting registration details') }}</div>
                 </div>
 
-                <div class="text-center">
+                <div
+                    class="text-center"
+                    x-data="{
+                        headerHomeScore: {{ (int) ($match->home_score ?? 0) }},
+                        headerAwayScore: {{ (int) ($match->away_score ?? 0) }},
+                    }"
+                    x-on:match-score-updated.window="headerHomeScore = $event.detail.home; headerAwayScore = $event.detail.away"
+                >
                     <div class="text-5xl font-semibold tracking-tight text-zinc-900 dark:text-white">
-                        {{ $match->home_score ?? 0 }}
+                        <span x-text="headerHomeScore">{{ $match->home_score ?? 0 }}</span>
                         <span class="mx-2 text-zinc-400">-</span>
-                        {{ $match->away_score ?? 0 }}
+                        <span x-text="headerAwayScore">{{ $match->away_score ?? 0 }}</span>
                     </div>
 
                     <div class="mt-4">
@@ -150,7 +158,7 @@
 
         @if (! $homeRegistration || ! $awayRegistration)
             <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
-                {{ __('Both home and away registrations must be attached to this match before live scoring can begin.') }}
+                {{ __('Both home and away registrations must be attached to this game before scores can be entered.') }}
             </section>
         @else
             @if ($matchHasManualScorelineWithoutLog)
@@ -159,188 +167,274 @@
                 </section>
             @endif
 
-            <div class="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                <div class="space-y-6">
-                    <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                        <div class="mb-4">
-                            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Match Control') }}</h2>
-                            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Set the public match state and keep any operator notes beside the scoring timeline.') }}</p>
-                        </div>
-
-                        <form method="POST" action="{{ route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]) }}" class="space-y-4">
-                            @csrf
-                            @method('PATCH')
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Status') }}
-                                <select
-                                    name="status"
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                >
-                                    @foreach (['scheduled' => 'Scheduled', 'live' => 'Live', 'completed' => 'Completed'] as $value => $label)
-                                        <option value="{{ $value }}" @selected(old('status', $match->status) === $value)>{{ __($label) }}</option>
-                                    @endforeach
-                                </select>
-                                @error('status')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Operator Notes') }}
-                                <textarea
-                                    name="notes"
-                                    rows="5"
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                >{{ old('notes', $match->notes) }}</textarea>
-                                @error('notes')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            <button
-                                type="submit"
-                                class="inline-flex w-full items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
-                            >
-                                {{ __('Save Match Control') }}
-                            </button>
-                        </form>
-                    </section>
-
-                    <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                        <div class="mb-4">
-                            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Add Scoring Play') }}</h2>
-                            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Each play updates the scoreline, the public score breakdown, and the scorer/assister totals automatically.') }}</p>
-                        </div>
-
-                        <form
-                            method="POST"
-                            action="{{ route('admin.tournaments.matches.scoring.store', ['tournament' => $tournament, 'match' => $match]) }}"
-                            class="space-y-4"
-                            x-data="{
-                                memberDirectory: @js($memberDirectory),
-                                teamRegistrationId: @js($initialRegistrationId),
-                                scorerId: @js($initialScorerId),
-                                assisterId: @js($initialAssisterId),
-                                get activeMembers() {
-                                    return this.memberDirectory[this.teamRegistrationId] ?? [];
-                                },
-                                syncSelections() {
-                                    if (! this.activeMembers.some((member) => String(member.id) === String(this.scorerId))) {
-                                        this.scorerId = '';
-                                    }
-
-                                    if (
-                                        ! this.activeMembers.some((member) => String(member.id) === String(this.assisterId))
-                                        || String(this.assisterId) === String(this.scorerId)
-                                    ) {
-                                        this.assisterId = '';
-                                    }
-                                },
-                            }"
-                            x-init="syncSelections()"
-                        >
-                            @csrf
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Scoring Team') }}
-                                <select
-                                    name="team_registration_id"
-                                    x-model="teamRegistrationId"
-                                    x-on:change="syncSelections()"
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                >
-                                    <option value="">{{ __('Select team') }}</option>
-                                    @foreach ([$homeRegistration, $awayRegistration] as $registration)
-                                        <option value="{{ $registration->id }}">
-                                            {{ $registration->team->name }}
-                                            {{ $registration->seed_number ? '· Seed '.$registration->seed_number : '' }}
-                                        </option>
-                                    @endforeach
-                                </select>
-                                @error('team_registration_id')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            <div class="grid gap-4 md:grid-cols-2">
-                                <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                    {{ __('Scorer') }}
-                                    <select
-                                        name="team_member_id"
-                                        x-model="scorerId"
-                                        class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                    >
-                                        <option value="">{{ __('Select scorer') }}</option>
-                                        <template x-for="member in activeMembers" :key="member.id">
-                                            <option x-bind:value="member.id" x-text="`${member.name} (${member.role.replace('_', ' ')})`"></option>
-                                        </template>
-                                    </select>
-                                    @error('team_member_id')
-                                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                    @enderror
-                                </label>
-
-                                <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                    {{ __('Assister') }}
-                                    <select
-                                        name="assist_team_member_id"
-                                        x-model="assisterId"
-                                        class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                    >
-                                        <option value="">{{ __('No assist recorded') }}</option>
-                                        <template x-for="member in activeMembers.filter((member) => String(member.id) !== String(scorerId))" :key="member.id">
-                                            <option x-bind:value="member.id" x-text="`${member.name} (${member.role.replace('_', ' ')})`"></option>
-                                        </template>
-                                    </select>
-                                    @error('assist_team_member_id')
-                                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                    @enderror
-                                </label>
-                            </div>
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Minute') }}
-                                <input
-                                    name="minute"
-                                    type="number"
-                                    min="0"
-                                    max="999"
-                                    value="{{ old('minute') }}"
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                >
-                                <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Optional. Leave blank if the exact minute was not tracked.') }}</p>
-                                @error('minute')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            @if ($matchHasManualScorelineWithoutLog)
-                                <label class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
-                                    <input
-                                        type="checkbox"
-                                        name="replace_manual_scoreline"
-                                        value="1"
-                                        @checked(old('replace_manual_scoreline'))
-                                        class="mt-0.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
-                                    >
-                                    <span>{{ __('I understand that the first scoring play will replace the current manual scoreline with the new automatic live-scoring total.') }}</span>
-                                </label>
-                                @error('replace_manual_scoreline')
-                                    <p class="text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            @endif
-
-                            <button
-                                type="submit"
-                                class="inline-flex w-full items-center justify-center rounded-lg bg-[#2f55b7] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#244591]"
-                            >
-                                {{ __('Add Scoring Play') }}
-                            </button>
-                        </form>
-                    </section>
+            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
+                <div class="mb-4">
+                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Match Control') }}</h2>
+                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                        {{ __('Status and notes save automatically. Score inputs are available only when the match is completed.') }}
+                    </p>
                 </div>
 
+                <form
+                    method="POST"
+                    action="{{ route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]) }}"
+                    class="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-end"
+                    x-data
+                >
+                    @csrf
+                    @method('PATCH')
+
+                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                        {{ __('Status') }}
+                        <select
+                            name="status"
+                            x-on:change="$root.submit()"
+                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+                        >
+                            @foreach (['scheduled' => 'Scheduled', 'live' => 'Live', 'completed' => 'Completed'] as $value => $label)
+                                <option value="{{ $value }}" @selected(old('status', $match->status) === $value)>{{ __($label) }}</option>
+                            @endforeach
+                        </select>
+                        @error('status')
+                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                        @enderror
+                    </label>
+
+                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                        {{ __('Notes') }}
+                        <input
+                            name="notes"
+                            value="{{ old('notes', $match->notes) }}"
+                            x-on:change="$root.submit()"
+                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+                        >
+                        @error('notes')
+                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                        @enderror
+                    </label>
+                </form>
+            </section>
+
+            <section class="rounded-xl border border-neutral-200 bg-white px-6 py-5 text-center dark:border-neutral-700 dark:bg-zinc-900">
+                <div class="flex flex-col items-center justify-center gap-2 text-xl font-semibold text-zinc-900 sm:flex-row dark:text-white">
+                    <span>{{ $homeTeam?->name ?: __('Home Team') }}</span>
+                    <span class="text-sm font-bold uppercase tracking-[0.18em] text-zinc-500 dark:text-zinc-400">{{ __('vs') }}</span>
+                    <span>{{ $awayTeam?->name ?: __('Away Team') }}</span>
+                </div>
+            </section>
+
+            @if ($scoreInputVisible)
+            <div
+                class="grid gap-6 sm:grid-cols-2"
+                x-data="{
+                    homeScore: {{ (int) ($match->home_score ?? 0) }},
+                    awayScore: {{ (int) ($match->away_score ?? 0) }},
+                    busyKey: null,
+                    savedKey: null,
+                    errorKey: null,
+                    async saveStat(memberId, field, rawValue) {
+                        if (! memberId) return;
+
+                        const key = `${memberId}-${field}`;
+                        this.busyKey = key;
+                        this.errorKey = null;
+
+                        try {
+                            const response = await fetch(@js(route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match])), {
+                                method: 'PATCH',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/json',
+                                    'X-CSRF-TOKEN': @js(csrf_token()),
+                                    'X-Requested-With': 'XMLHttpRequest',
+                                },
+                                body: JSON.stringify({
+                                    team_member_id: memberId,
+                                    field: field,
+                                    value: rawValue === '' || rawValue === null ? 0 : Number(rawValue),
+                                }),
+                            });
+
+                            if (! response.ok) {
+                                throw new Error('save-failed');
+                            }
+
+                            const data = await response.json();
+                            this.homeScore = data.home_score;
+                            this.awayScore = data.away_score;
+                            window.dispatchEvent(new CustomEvent('match-score-updated', {
+                                detail: { home: data.home_score, away: data.away_score },
+                            }));
+                            this.savedKey = key;
+                            setTimeout(() => { if (this.savedKey === key) this.savedKey = null; }, 1200);
+                        } catch (error) {
+                            console.error('player stat save failed', error);
+                            this.errorKey = key;
+                            setTimeout(() => { if (this.errorKey === key) this.errorKey = null; }, 2000);
+                        } finally {
+                            if (this.busyKey === key) this.busyKey = null;
+                        }
+                    },
+                    async saveLinkedAssistAndGoal(memberId, rawValue) {
+                        if (! memberId) return;
+
+                        const value = rawValue === '' || rawValue === null ? 0 : Number(rawValue);
+                        const assistsInput = document.querySelector(`input[name='player_stats[${memberId}][assists]']`);
+                        const goalsInput = document.querySelector(`input[name='player_stats[${memberId}][goals]']`);
+
+                        if (assistsInput) assistsInput.value = value;
+                        if (goalsInput) goalsInput.value = value;
+
+                        await this.saveStat(memberId, 'assists', value);
+                        await this.saveStat(memberId, 'goals', value);
+                    },
+                }"
+            >
+                @foreach ([
+                    ['team' => $homeTeam, 'stats' => $homeStats, 'totalScore' => $match->home_score ?? 0, 'side' => 'home'],
+                    ['team' => $awayTeam, 'stats' => $awayStats, 'totalScore' => $match->away_score ?? 0, 'side' => 'away'],
+                ] as $sheet)
+                    @php
+                        $sheetTeam = $sheet['team'];
+                        $sheetStatsByMember = $sheet['stats']->keyBy('team_member_id');
+                        $sheetMembers = $sheetTeam?->members ?? collect();
+                        $sheetMaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'male')->values();
+                        $sheetFemaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'female')->values();
+                        $sheetOtherMembers = $sheetMembers
+                            ->filter(fn ($member) => ! in_array(strtolower((string) $member->gender), ['male', 'female'], true))
+                            ->values();
+                        $sheetGenderGroups = collect([
+                            ['label' => __('MALE'), 'roster' => $sheetMaleMembers, 'minRows' => 20],
+                            ['label' => __('FEMALE'), 'roster' => $sheetFemaleMembers, 'minRows' => 10],
+                        ]);
+
+                        if ($sheetOtherMembers->isNotEmpty()) {
+                            $sheetGenderGroups->push([
+                                'label' => __('OTHER'),
+                                'roster' => $sheetOtherMembers,
+                                'minRows' => max($sheetOtherMembers->count(), 5),
+                            ]);
+                        }
+                    @endphp
+
+                    <section class="overflow-hidden rounded-xl border border-neutral-300 bg-white text-zinc-900 shadow-sm dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-100">
+                        <table class="w-full border-collapse text-sm">
+                            <thead>
+                                <tr class="border-b border-neutral-300 dark:border-neutral-700">
+                                    <th colspan="4" class="border-r border-neutral-300 px-3 py-2 text-center text-base font-semibold uppercase tracking-wide dark:border-neutral-700">
+                                        {{ $sheetTeam?->name ?: ($sheet['side'] === 'home' ? __('Home Team') : __('Away Team')) }}
+                                    </th>
+                                    <th class="px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide">
+                                        <div>{{ __('TOTAL SCORE') }}</div>
+                                        <div class="mt-1 text-2xl font-bold tracking-tight" x-text="{{ $sheet['side'] === 'home' ? 'homeScore' : 'awayScore' }}">{{ $sheet['totalScore'] }}</div>
+                                    </th>
+                                </tr>
+                                <tr class="border-b border-neutral-300 bg-yellow-200 text-zinc-900 dark:border-neutral-700 dark:bg-yellow-300 dark:text-zinc-900">
+                                    <th class="w-10 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">#</th>
+                                    <th class="border-r border-neutral-300 px-3 py-1.5 text-center text-xs font-bold uppercase">{{ __('NAMES') }}</th>
+                                    <th class="w-20 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('BLOCKS') }}</th>
+                                    <th class="w-20 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('ASSISTS') }}</th>
+                                    <th class="w-20 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('SCORES') }}</th>
+                                </tr>
+                            </thead>
+
+                            <tbody>
+                                @foreach ($sheetGenderGroups as $group)
+                                    <tr class="border-b border-neutral-300 bg-zinc-50 dark:border-neutral-700 dark:bg-zinc-950">
+                                        <td colspan="5" class="px-3 py-1 text-xs font-semibold italic uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+                                            {{ $group['label'] }}
+                                        </td>
+                                    </tr>
+
+                                    @php
+                                        $rosterCount = $group['roster']->count();
+                                        $rowCount = max($rosterCount, $group['minRows']);
+                                    @endphp
+
+                                    @for ($i = 0; $i < $rowCount; $i++)
+                                        @php
+                                            $member = $group['roster']->get($i);
+                                            $stat = $member ? $sheetStatsByMember->get($member->id) : null;
+                                        @endphp
+                                        <tr class="border-b border-neutral-200 last:border-b-0 dark:border-neutral-800">
+                                            <td class="w-10 border-r border-neutral-200 px-2 py-1 text-center text-xs text-zinc-500 dark:border-neutral-800 dark:text-zinc-400">
+                                                {{ $i + 1 }}
+                                            </td>
+                                            <td class="border-r border-neutral-200 px-3 py-1 text-sm italic text-zinc-800 dark:border-neutral-800 dark:text-zinc-100">
+                                                {{ $member?->name ?? '' }}
+                                            </td>
+                                            <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max="999"
+                                                    @disabled(! $member)
+                                                    name="player_stats[{{ $member?->id }}][blocks]"
+                                                    value="{{ $stat?->blocks }}"
+                                                    @if ($member)
+                                                        x-on:change="saveStat({{ $member->id }}, 'blocks', $event.target.value)"
+                                                        :class="{
+                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-blocks',
+                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-blocks',
+                                                            'opacity-60': busyKey === '{{ $member->id }}-blocks',
+                                                        }"
+                                                    @endif
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                >
+                                            </td>
+                                            <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max="999"
+                                                    @disabled(! $member)
+                                                    name="player_stats[{{ $member?->id }}][assists]"
+                                                    value="{{ $stat?->assists }}"
+                                                    @if ($member)
+                                                        x-on:change="saveLinkedAssistAndGoal({{ $member->id }}, $event.target.value)"
+                                                        :class="{
+                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists' || savedKey === '{{ $member->id }}-goals',
+                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists' || errorKey === '{{ $member->id }}-goals',
+                                                            'opacity-60': busyKey === '{{ $member->id }}-assists' || busyKey === '{{ $member->id }}-goals',
+                                                        }"
+                                                    @endif
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                >
+                                            </td>
+                                            <td class="w-20 px-1 py-0.5 text-center">
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max="999"
+                                                    @disabled(! $member)
+                                                    name="player_stats[{{ $member?->id }}][goals]"
+                                                    value="{{ $stat?->goals }}"
+                                                    @if ($member)
+                                                        x-on:change="saveLinkedAssistAndGoal({{ $member->id }}, $event.target.value)"
+                                                        :class="{
+                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists' || savedKey === '{{ $member->id }}-goals',
+                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists' || errorKey === '{{ $member->id }}-goals',
+                                                            'opacity-60': busyKey === '{{ $member->id }}-assists' || busyKey === '{{ $member->id }}-goals',
+                                                        }"
+                                                    @endif
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                >
+                                            </td>
+                                        </tr>
+                                    @endfor
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </section>
+                @endforeach
+            </div>
+            @else
+                <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-center text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
+                    {{ __('Score input is hidden while this match is :status. Change Match Control to Completed before entering player scores.', ['status' => str($match->status)->headline()]) }}
+                </section>
+            @endif
+
+            @if ($match->scoreLogs->isNotEmpty())
                 <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
                     <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
@@ -409,8 +503,9 @@
                         @endforelse
                     </div>
                 </section>
-            </div>
+            @endif
 
+            @if ($match->scoreLogs->isNotEmpty())
             <div class="grid gap-6 xl:grid-cols-2">
                 @foreach ([
                     ['team' => $homeTeam, 'stats' => $homeStats, 'accent' => 'text-[#2f55b7]'],
@@ -451,6 +546,7 @@
                     </section>
                 @endforeach
             </div>
+            @endif
         @endif
     </div>
 </x-layouts::app>

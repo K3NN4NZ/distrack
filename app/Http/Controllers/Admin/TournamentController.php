@@ -152,7 +152,7 @@ class TournamentController extends Controller
     }
 
     /**
-     * Show the dedicated live-scoring console for a tournament match.
+     * Show the dedicated score entry page for a tournament match.
      */
     public function showMatchScoring(Request $request, Tournament $tournament, TournamentMatch $match): View
     {
@@ -169,7 +169,7 @@ class TournamentController extends Controller
     }
 
     /**
-     * Update live-scoring match status and operator notes.
+     * Update manual match status, scoreline, and operator notes.
      */
     public function updateMatchScoring(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
     {
@@ -177,34 +177,45 @@ class TournamentController extends Controller
 
         $validator = Validator::make($request->all(), [
             'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+            'home_score' => ['nullable', 'integer', 'min:0', 'max:999'],
+            'away_score' => ['nullable', 'integer', 'min:0', 'max:999'],
             'notes' => ['nullable', 'string'],
         ]);
 
         $validator->after(function ($validator) use ($request, $match): void {
             $hasScoreLogs = $match->scoreLogs()->exists();
-            $hasPublishedScoreline = $hasScoreLogs
-                || (! is_null($match->home_score) && ! is_null($match->away_score));
             $status = $request->string('status')->toString();
+            $hasHomeScore = $request->filled('home_score');
+            $hasAwayScore = $request->filled('away_score');
+
+            if ($hasHomeScore xor $hasAwayScore) {
+                $validator->errors()->add('home_score', 'Both scores are required when recording a result.');
+                $validator->errors()->add('away_score', 'Both scores are required when recording a result.');
+            }
 
             if ($status === 'scheduled' && $hasScoreLogs) {
                 $validator->errors()->add('status', 'Clear the scoring timeline before moving the match back to scheduled.');
             }
 
-            if ($status === 'completed' && ! $hasPublishedScoreline) {
-                $validator->errors()->add('status', 'Completed matches require a scoreline or at least one scoring play.');
-            }
         });
 
         $validated = $validator->validate();
-
-        $match->update([
+        $scoresVisible = $validated['status'] === 'completed'
+            && array_key_exists('home_score', $validated)
+            && array_key_exists('away_score', $validated)
+            && $validated['home_score'] !== null
+            && $validated['away_score'] !== null;
+        $matchUpdates = [
             'status' => $validated['status'],
             'notes' => $this->normalizeNullableString($validated['notes'] ?? null),
-        ]);
+        ];
 
-        if ($match->scoreLogs()->exists()) {
-            $this->syncMatchScoreTimeline($match->fresh());
+        if ($scoresVisible) {
+            $matchUpdates['home_score'] = $validated['home_score'];
+            $matchUpdates['away_score'] = $validated['away_score'];
         }
+
+        $match->update($matchUpdates);
 
         return redirect()
             ->route('admin.tournaments.matches.scoring', [
@@ -330,6 +341,96 @@ class TournamentController extends Controller
                 'match' => $match,
             ])
             ->with('status', 'score-play-deleted');
+    }
+
+    /**
+     * Auto-save a single player's goal/assist/block tally for a match.
+     */
+    public function updateMatchPlayerStat(Request $request, Tournament $tournament, TournamentMatch $match): JsonResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        abort_unless(
+            $match->status === 'completed',
+            422,
+            'Scores can only be entered after the match is completed.',
+        );
+
+        $validated = $request->validate([
+            'team_member_id' => ['required', 'integer', 'exists:team_members,id'],
+            'field' => ['required', 'string', Rule::in(['goals', 'assists', 'blocks'])],
+            'value' => ['nullable', 'integer', 'min:0', 'max:999'],
+        ]);
+
+        $teamMember = TeamMember::query()->findOrFail($validated['team_member_id']);
+
+        $homeTeamId = $match->homeRegistration?->team_id;
+        $awayTeamId = $match->awayRegistration?->team_id;
+
+        abort_unless(
+            in_array($teamMember->team_id, array_filter([$homeTeamId, $awayTeamId]), true),
+            422,
+            'Team member does not belong to either registered team.',
+        );
+
+        $value = (int) ($validated['value'] ?? 0);
+
+        DB::transaction(function () use ($match, $teamMember, $validated, $value): void {
+            $stat = MatchPlayerStat::query()->firstOrNew([
+                'match_id' => $match->id,
+                'team_member_id' => $teamMember->id,
+            ]);
+
+            $stat->goals = $stat->goals ?? 0;
+            $stat->assists = $stat->assists ?? 0;
+            $stat->blocks = $stat->blocks ?? 0;
+            $stat->{$validated['field']} = $value;
+
+            if ($stat->goals === 0 && $stat->assists === 0 && $stat->blocks === 0) {
+                if ($stat->exists) {
+                    $stat->delete();
+                }
+            } else {
+                $stat->save();
+            }
+
+            $this->syncMatchScoreFromPlayerStats($match);
+        });
+
+        $match->refresh()->load('playerStats');
+
+        return response()->json([
+            'ok' => true,
+            'home_score' => $match->home_score ?? 0,
+            'away_score' => $match->away_score ?? 0,
+        ]);
+    }
+
+    /**
+     * Recompute the visible scoreline from current player goal totals per side.
+     */
+    protected function syncMatchScoreFromPlayerStats(TournamentMatch $match): void
+    {
+        $homeTeamId = $match->homeRegistration?->team_id;
+        $awayTeamId = $match->awayRegistration?->team_id;
+
+        $stats = MatchPlayerStat::query()
+            ->with('teamMember:id,team_id')
+            ->where('match_id', $match->id)
+            ->get();
+
+        $homeScore = $stats
+            ->filter(fn ($stat) => $stat->teamMember?->team_id === $homeTeamId)
+            ->sum('goals');
+
+        $awayScore = $stats
+            ->filter(fn ($stat) => $stat->teamMember?->team_id === $awayTeamId)
+            ->sum('goals');
+
+        $match->forceFill([
+            'home_score' => (int) $homeScore,
+            'away_score' => (int) $awayScore,
+        ])->save();
     }
 
     /**
@@ -863,27 +964,6 @@ class TournamentController extends Controller
                     }
                 }
 
-                $pitchId = $request->integer('pitch_id');
-                $selectedRegistrationIds = collect([$homeRegistrationId, $awayRegistrationId])
-                    ->filter(fn (int $registrationId): bool => $registrationId > 0)
-                    ->values();
-
-                if ($pitchId > 0 && $selectedRegistrationIds->isNotEmpty()) {
-                    $pitchAlreadyHasSelectedTeams = TournamentMatch::query()
-                        ->where('tournament_id', $tournamentId)
-                        ->where('stage', 'round_robin')
-                        ->where('pitch_id', $pitchId)
-                        ->where(function (Builder $query) use ($selectedRegistrationIds): void {
-                            $query
-                                ->whereIn('home_registration_id', $selectedRegistrationIds)
-                                ->orWhereIn('away_registration_id', $selectedRegistrationIds);
-                        })
-                        ->exists();
-
-                    if ($pitchAlreadyHasSelectedTeams) {
-                        $validator->errors()->add('pitch_id', 'One or both selected teams are already scheduled on this pitch.');
-                    }
-                }
             }
         });
 
