@@ -54,12 +54,23 @@ class TournamentController extends Controller
         $selectedTournament?->load([
             'pitches',
             'registrations' => fn ($query) => $query
-                ->with('team')
+                ->with([
+                    'team' => fn ($teamQuery) => $teamQuery->with([
+                        'members' => fn ($membersQuery) => $membersQuery
+                            ->orderByRaw("case role when 'captain' then 0 when 'spirit_captain' then 1 else 2 end")
+                            ->orderBy('name')
+                            ->orderBy('id'),
+                    ]),
+                ])
                 ->orderByRaw('case when seed_number is null then 1 else 0 end')
                 ->orderBy('seed_number')
                 ->orderBy('id'),
             'matches' => fn ($query) => $query
-                ->with(['pitch', 'homeRegistration.team', 'awayRegistration.team'])
+                ->with([
+                    'pitch',
+                    'homeRegistration.team.members',
+                    'awayRegistration.team.members',
+                ])
                 ->orderByRaw('case when scheduled_at is null then 1 else 0 end')
                 ->orderBy('scheduled_at')
                 ->orderBy('match_number')
@@ -863,7 +874,211 @@ class TournamentController extends Controller
     }
 
     /**
-     * Legacy endpoint retained so stale clients cannot auto-generate round robin matches.
+     * Create crossover games by mirror rank: bracket pair (A,B) yields A1 vs B{N}, …, A{N} vs B1.
+     * Brackets with ranks are ordered alphabetically then paired two-by-two (A+B, C+D, …).
+     */
+    public function generateCrossoverSchedule(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
+        ]);
+
+        $tournamentId = (int) $validated['tournament_id'];
+
+        $rankedRegistrations = TournamentRegistration::query()
+            ->where('tournament_id', $tournamentId)
+            ->get()
+            ->filter(fn (TournamentRegistration $registration): bool => filled(trim((string) ($registration->bracket_rank ?? ''))));
+
+        if ($rankedRegistrations->isEmpty()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'crossover' => 'Apply bracket ranking first so every crossover team has a rank (for example A1, B4).',
+                ]);
+        }
+
+        $groupedByBracket = $rankedRegistrations
+            ->groupBy(fn (TournamentRegistration $registration): string => BracketCodes::normalize($registration->bracket_code ?? null) ?? '')
+            ->filter(fn (Collection $_registrations, string $bracketCode): bool => $bracketCode !== '');
+
+        $sortedBracketCodes = $groupedByBracket->keys()->sort()->values();
+
+        if ($sortedBracketCodes->count() < 2) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'crossover' => 'Crossover needs at least two seeded brackets that each have bracket ranks.',
+                ]);
+        }
+
+        if ($sortedBracketCodes->count() % 2 !== 0) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'crossover' => 'Automatic crossover expects an even number of ranked brackets (for example Bracket A and Bracket B, or four brackets pairing A+B then C+D).',
+                ]);
+        }
+
+        foreach (range(0, $sortedBracketCodes->count() - 2, 2) as $pairOffset) {
+            $codeLeft = $sortedBracketCodes[$pairOffset];
+            $codeRight = $sortedBracketCodes[$pairOffset + 1];
+            if ($groupedByBracket[$codeLeft]->count() !== $groupedByBracket[$codeRight]->count()) {
+                return redirect()
+                    ->route(
+                        $this->resolveTournamentRedirectRoute($request),
+                        $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                    )
+                    ->withErrors([
+                        'crossover' => "{$codeLeft} has {$groupedByBracket[$codeLeft]->count()} ranked teams while {$codeRight} has {$groupedByBracket[$codeRight]->count()}; counts must match to build mirror crossover games.",
+                    ]);
+            }
+        }
+
+        $pitches = Pitch::query()
+            ->where('tournament_id', $tournamentId)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $nextMatchNumber = ((int) TournamentMatch::query()
+            ->where('tournament_id', $tournamentId)
+            ->where('stage', 'crossover')
+            ->max('match_number')) + 1;
+
+        $createdCount = 0;
+        $skippedDuplicates = 0;
+        $crossoverGameOrdinal = 0;
+
+        DB::transaction(function () use (
+            $groupedByBracket,
+            $sortedBracketCodes,
+            $tournamentId,
+            $pitches,
+            &$nextMatchNumber,
+            &$createdCount,
+            &$skippedDuplicates,
+            &$crossoverGameOrdinal,
+        ): void {
+            $pitchAssignments = 0;
+
+            foreach (range(0, $sortedBracketCodes->count() - 2, 2) as $pairOffset) {
+                $codeLeft = $sortedBracketCodes[$pairOffset];
+                $codeRight = $sortedBracketCodes[$pairOffset + 1];
+
+                $leftSide = $groupedByBracket[$codeLeft]
+                    ->sort(function (TournamentRegistration $left, TournamentRegistration $right): int {
+                        return [
+                            $this->crossoverBracketRankOrderingValue((string) $left->bracket_rank),
+                            $left->id,
+                        ] <=> [
+                            $this->crossoverBracketRankOrderingValue((string) $right->bracket_rank),
+                            $right->id,
+                        ];
+                    })
+                    ->values();
+
+                $rightSide = $groupedByBracket[$codeRight]
+                    ->sort(function (TournamentRegistration $left, TournamentRegistration $right): int {
+                        return [
+                            $this->crossoverBracketRankOrderingValue((string) $left->bracket_rank),
+                            $left->id,
+                        ] <=> [
+                            $this->crossoverBracketRankOrderingValue((string) $right->bracket_rank),
+                            $right->id,
+                        ];
+                    })
+                    ->values();
+
+                $n = $leftSide->count();
+
+                if ($rightSide->count() !== $n || $n < 1) {
+                    continue;
+                }
+
+                for ($index = 0; $index < $n; $index++) {
+                    $homeRegistration = $leftSide[$index];
+                    $awayRegistration = $rightSide[$n - $index - 1];
+                    $crossoverGameOrdinal++;
+
+                    if ($this->crossoverDuplicatePairExists(
+                        $tournamentId,
+                        (int) $homeRegistration->id,
+                        (int) $awayRegistration->id,
+                    )) {
+                        $skippedDuplicates++;
+
+                        continue;
+                    }
+
+                    $shortLeft = BracketCodes::rankPrefixFromCode($codeLeft);
+                    $shortRight = BracketCodes::rankPrefixFromCode($codeRight);
+                    $roundLabel = "Cross · {$shortLeft} vs {$shortRight} #{$crossoverGameOrdinal}";
+
+                    $pitchId = $pitches->isEmpty()
+                        ? null
+                        : $pitches->get($pitchAssignments++ % max($pitches->count(), 1))?->id;
+
+                    TournamentMatch::create([
+                        'tournament_id' => $tournamentId,
+                        'pitch_id' => $pitchId,
+                        'home_registration_id' => $homeRegistration->id,
+                        'away_registration_id' => $awayRegistration->id,
+                        'stage' => 'crossover',
+                        'round_label' => $roundLabel,
+                        'match_number' => $nextMatchNumber++,
+                        'scheduled_at' => null,
+                        'status' => 'scheduled',
+                        'home_score' => null,
+                        'away_score' => null,
+                        'notes' => null,
+                    ]);
+
+                    $createdCount++;
+                }
+            }
+        });
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournamentId),
+            )
+            ->with('status', 'crossover-schedule-generated')
+            ->with('crossover_matches_created', $createdCount)
+            ->with('crossover_matches_skipped_duplicates', $skippedDuplicates);
+    }
+
+    /**
+     * Numeric suffix used to order ranks like A5 before A11 when applicable.
+     */
+    protected function crossoverBracketRankOrderingValue(string $bracketRank): int
+    {
+        $bracketRank = trim($bracketRank);
+
+        if ($bracketRank === '') {
+            return PHP_INT_MAX;
+        }
+
+        if (preg_match('/(\d+)\s*$/', $bracketRank, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return PHP_INT_MAX;
+    }
+
+    /**
+     * Generate one round-robin schedule per seeded bracket and assign each
+     * bracket to the next available pitch.
      */
     public function generateRoundRobinMatches(Request $request): RedirectResponse
     {
@@ -871,14 +1086,150 @@ class TournamentController extends Controller
             'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
         ]);
 
+        $tournamentId = (int) $validated['tournament_id'];
+        $pitches = Pitch::query()
+            ->where('tournament_id', $tournamentId)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($pitches->isEmpty()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'round_robin' => 'Add Pitch 1 and Pitch 2 first before generating the bracket round robin schedule.',
+                ]);
+        }
+
+        $bracketGroups = TournamentRegistration::query()
+            ->with('team')
+            ->where('tournament_id', $tournamentId)
+            ->whereNotNull('bracket_code')
+            ->get()
+            ->groupBy(fn (TournamentRegistration $registration): string => $this->normalizeBracketCode($registration->bracket_code) ?? '')
+            ->filter(fn (Collection $registrations, string $bracketCode): bool => $bracketCode !== '' && $registrations->count() >= 2)
+            ->sortKeys()
+            ->values();
+
+        if ($bracketGroups->isEmpty()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'round_robin' => 'Seed teams into brackets first. Round robin is generated inside each bracket only.',
+                ]);
+        }
+
+        $createdCount = 0;
+        $assignedCount = 0;
+        $updatedCount = 0;
+
+        DB::transaction(function () use ($tournamentId, $pitches, $bracketGroups, &$createdCount, &$assignedCount, &$updatedCount): void {
+            $existingMatches = TournamentMatch::query()
+                ->where('tournament_id', $tournamentId)
+                ->where('stage', 'round_robin')
+                ->get();
+
+            $matchesByPair = [];
+
+            foreach ($existingMatches as $match) {
+                if (! $match->home_registration_id || ! $match->away_registration_id) {
+                    continue;
+                }
+
+                $matchesByPair[$this->roundRobinPairKey((int) $match->home_registration_id, (int) $match->away_registration_id)] = $match;
+            }
+
+            $nextMatchNumber = ((int) TournamentMatch::query()
+                ->where('tournament_id', $tournamentId)
+                ->where('stage', 'round_robin')
+                ->max('match_number')) + 1;
+
+            foreach ($bracketGroups as $bracketIndex => $registrations) {
+                $pitch = $pitches->values()->get($bracketIndex % $pitches->count());
+                $bracketCode = $this->normalizeBracketCode($registrations->first()->bracket_code) ?? 'Bracket';
+                $sortedRegistrations = $registrations
+                    ->sort(fn (TournamentRegistration $left, TournamentRegistration $right): int => [
+                        $left->seed_number ?? PHP_INT_MAX,
+                        $left->team?->name ?? '',
+                        $left->id,
+                    ] <=> [
+                        $right->seed_number ?? PHP_INT_MAX,
+                        $right->team?->name ?? '',
+                        $right->id,
+                    ])
+                    ->values();
+                $bracketMatchNumber = 1;
+
+                for ($homeIndex = 0; $homeIndex < $sortedRegistrations->count(); $homeIndex++) {
+                    for ($awayIndex = $homeIndex + 1; $awayIndex < $sortedRegistrations->count(); $awayIndex++) {
+                        $homeRegistration = $sortedRegistrations->get($homeIndex);
+                        $awayRegistration = $sortedRegistrations->get($awayIndex);
+                        $pairKey = $this->roundRobinPairKey($homeRegistration->id, $awayRegistration->id);
+                        $roundLabel = "{$bracketCode} Match {$bracketMatchNumber}";
+                        $existingMatch = $matchesByPair[$pairKey] ?? null;
+
+                        if ($existingMatch) {
+                            $updates = [];
+
+                            if (! $existingMatch->pitch_id) {
+                                $updates['pitch_id'] = $pitch->id;
+                            }
+
+                            if (! $existingMatch->round_label) {
+                                $updates['round_label'] = $roundLabel;
+                            }
+
+                            if (! $existingMatch->match_number) {
+                                $updates['match_number'] = $nextMatchNumber++;
+                            }
+
+                            if ($updates !== []) {
+                                $existingMatch->update($updates);
+                                $updatedCount++;
+
+                                if (array_key_exists('pitch_id', $updates)) {
+                                    $assignedCount++;
+                                }
+                            }
+                        } else {
+                            $match = TournamentMatch::create([
+                                'tournament_id' => $tournamentId,
+                                'pitch_id' => $pitch->id,
+                                'home_registration_id' => $homeRegistration->id,
+                                'away_registration_id' => $awayRegistration->id,
+                                'stage' => 'round_robin',
+                                'round_label' => $roundLabel,
+                                'match_number' => $nextMatchNumber++,
+                                'status' => 'completed',
+                                'home_score' => 0,
+                                'away_score' => 0,
+                            ]);
+
+                            $matchesByPair[$pairKey] = $match;
+                            $createdCount++;
+                        }
+
+                        $bracketMatchNumber++;
+                    }
+                }
+            }
+        });
+
         return redirect()
             ->route(
                 $this->resolveTournamentRedirectRoute($request),
-                $this->resolveTournamentRedirectParameters($request, $validated['tournament_id']),
+                $this->resolveTournamentRedirectParameters($request, $tournamentId),
             )
-            ->withErrors([
-                'round_robin' => 'Round robin matches must be created manually. Use Add Match Manually to build the schedule.',
-            ]);
+            ->with('status', 'round-robin-generated')
+            ->with('round_robin_created', $createdCount)
+            ->with('round_robin_assigned', $assignedCount)
+            ->with('round_robin_updated', $updatedCount);
     }
 
     /**
@@ -986,6 +1337,41 @@ class TournamentController extends Controller
                 }
 
             }
+
+            if ($stage === 'crossover') {
+                $homeRegistrationId = $request->integer('home_registration_id');
+                $awayRegistrationId = $request->integer('away_registration_id');
+
+                $selectedRegistrations = TournamentRegistration::query()
+                    ->whereIn('id', [$homeRegistrationId, $awayRegistrationId])
+                    ->get()
+                    ->keyBy('id');
+
+                $homeRegistration = $selectedRegistrations->get($homeRegistrationId);
+                $awayRegistration = $selectedRegistrations->get($awayRegistrationId);
+
+                if ($homeRegistration && $awayRegistration) {
+                    $homeRank = trim((string) ($homeRegistration->bracket_rank ?? ''));
+                    $awayRank = trim((string) ($awayRegistration->bracket_rank ?? ''));
+
+                    if ($homeRank === '' || $awayRank === '') {
+                        $validator->errors()->add('home_registration_id', 'Crossover teams must have a bracket rank from Bracket Ranking (e.g. A1, B2).');
+                    }
+
+                    $homeBracket = $this->normalizeBracketCode($homeRegistration->bracket_code);
+                    $awayBracket = $this->normalizeBracketCode($awayRegistration->bracket_code);
+
+                    if ($homeBracket === null || $awayBracket === null || $homeBracket === $awayBracket) {
+                        $validator->errors()->add('away_registration_id', 'Crossover pairs must be from two different brackets.');
+                    }
+
+                    if ($homeRegistrationId > 0 && $awayRegistrationId > 0
+                        && $this->crossoverDuplicatePairExists($tournamentId, $homeRegistrationId, $awayRegistrationId)
+                    ) {
+                        $validator->errors()->add('away_registration_id', 'This crossover matchup has already been scheduled.');
+                    }
+                }
+            }
         });
 
         $validated = $validator->validate();
@@ -1054,6 +1440,41 @@ class TournamentController extends Controller
                     ->exists()
                 ) {
                     $validator->errors()->add($field, 'The selected team registration does not belong to this tournament.');
+                }
+            }
+
+            if ($match->stage === 'crossover') {
+                $homeRegistrationId = $request->integer('home_registration_id');
+                $awayRegistrationId = $request->integer('away_registration_id');
+
+                $selectedRegistrations = TournamentRegistration::query()
+                    ->whereIn('id', [$homeRegistrationId, $awayRegistrationId])
+                    ->get()
+                    ->keyBy('id');
+
+                $homeRegistration = $selectedRegistrations->get($homeRegistrationId);
+                $awayRegistration = $selectedRegistrations->get($awayRegistrationId);
+
+                if ($homeRegistration && $awayRegistration) {
+                    $homeRank = trim((string) ($homeRegistration->bracket_rank ?? ''));
+                    $awayRank = trim((string) ($awayRegistration->bracket_rank ?? ''));
+
+                    if ($homeRank === '' || $awayRank === '') {
+                        $validator->errors()->add('home_registration_id', 'Crossover teams must have a bracket rank from Bracket Ranking.');
+                    }
+
+                    $homeBracket = $this->normalizeBracketCode($homeRegistration->bracket_code);
+                    $awayBracket = $this->normalizeBracketCode($awayRegistration->bracket_code);
+
+                    if ($homeBracket === null || $awayBracket === null || $homeBracket === $awayBracket) {
+                        $validator->errors()->add('away_registration_id', 'Crossover pairs must be from two different brackets.');
+                    }
+
+                    if ($homeRegistrationId > 0 && $awayRegistrationId > 0
+                        && $this->crossoverDuplicatePairExists($tournamentId, $homeRegistrationId, $awayRegistrationId, $match->id)
+                    ) {
+                        $validator->errors()->add('away_registration_id', 'This crossover matchup already exists.');
+                    }
                 }
             }
         });
@@ -1274,6 +1695,46 @@ class TournamentController extends Controller
     protected function normalizeBracketCode(?string $value): ?string
     {
         return BracketCodes::normalize($value);
+    }
+
+    /**
+     * Build a stable key for a round-robin pair regardless of home/away side.
+     */
+    protected function roundRobinPairKey(int $leftRegistrationId, int $rightRegistrationId): string
+    {
+        $ids = [$leftRegistrationId, $rightRegistrationId];
+        sort($ids);
+
+        return implode('-', $ids);
+    }
+
+    /**
+     * Whether an identical crossover pairing already exists (either home/away orientation).
+     */
+    protected function crossoverDuplicatePairExists(int $tournamentId, int $homeRegistrationId, int $awayRegistrationId, ?int $exceptMatchId = null): bool
+    {
+        $query = TournamentMatch::query()
+            ->where('tournament_id', $tournamentId)
+            ->where('stage', 'crossover')
+            ->where(function (Builder $query) use ($homeRegistrationId, $awayRegistrationId): void {
+                $query
+                    ->where(function (Builder $pairQuery) use ($homeRegistrationId, $awayRegistrationId): void {
+                        $pairQuery
+                            ->where('home_registration_id', $homeRegistrationId)
+                            ->where('away_registration_id', $awayRegistrationId);
+                    })
+                    ->orWhere(function (Builder $pairQuery) use ($homeRegistrationId, $awayRegistrationId): void {
+                        $pairQuery
+                            ->where('home_registration_id', $awayRegistrationId)
+                            ->where('away_registration_id', $homeRegistrationId);
+                    });
+            });
+
+        if ($exceptMatchId !== null) {
+            $query->whereKeyNot($exceptMatchId);
+        }
+
+        return $query->exists();
     }
 
     /**
@@ -1754,12 +2215,21 @@ class TournamentController extends Controller
     protected function normalizeTournamentTab(?string $tab): ?string
     {
         $tab = $this->normalizeNullableString($tab);
+        $tab = $tab !== null ? trim($tab, "\"' ") : null;
 
         if ($tab === 'basic-info') {
             return 'round-robin';
         }
 
-        return in_array($tab, ['overview', 'round-robin', 'teams', 'pitches', 'format', 'matches', 'crew', 'publish'], true)
+        if ($tab === 'teams') {
+            return 'bracket-ranking';
+        }
+
+        if ($tab === 'pitches') {
+            return 'crossover';
+        }
+
+        return in_array($tab, ['overview', 'round-robin', 'bracket-ranking', 'crossover', 'format', 'matches', 'crew', 'publish'], true)
             ? $tab
             : null;
     }

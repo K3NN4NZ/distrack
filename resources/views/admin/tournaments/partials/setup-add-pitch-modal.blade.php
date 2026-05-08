@@ -1,5 +1,5 @@
 @php
-    $pitchModalRedirectTab = $redirectTab ?? 'pitches';
+    $pitchModalRedirectTab = $redirectTab ?? 'crossover';
 @endphp
 <flux:modal
     name="setup-add-pitch-modal-{{ $tournament->id }}"
@@ -9,9 +9,9 @@
     <div class="space-y-6">
         <div class="flex items-start justify-between gap-4">
             <div>
-                <flux:heading size="lg">{{ __('Add Pitch') }}</flux:heading>
+                <flux:heading size="lg">{{ __('Add playing field') }}</flux:heading>
                 <flux:text class="mt-1">
-                    {{ __('Attach playable fields to :tournament.', ['tournament' => $tournament->name]) }}
+                    {{ __('Attach a playable surface (for example FIELD 1 / FIELD 2) to :tournament.', ['tournament' => $tournament->name]) }}
                 </flux:text>
             </div>
 
@@ -29,12 +29,12 @@
             <input type="hidden" name="redirect_route" value="admin.tournaments.index">
             <input type="hidden" name="redirect_tab" value="{{ $pitchModalRedirectTab }}">
 
-            <flux:input name="name" :label="__('Pitch Name')" :value="old('name')" type="text" required />
+            <flux:input name="name" :label="__('Field name')" :value="old('name')" type="text" required />
             <flux:input name="location" :label="__('Location')" :value="old('location')" type="text" />
             <flux:input name="sort_order" :label="__('Sort Order')" :value="old('sort_order', 1)" type="number" min="1" required />
 
             <flux:button type="submit" variant="primary" class="w-full">
-                {{ __('Add Pitch') }}
+                {{ __('Add field') }}
             </flux:button>
         </form>
     </div>

@@ -81,7 +81,7 @@ test('bracket ranking applies A1 A2 from completed round robin in same bracket',
         ->assertSessionHas('status', 'bracket-ranking-applied')
         ->assertRedirect(route('admin.tournaments.index', [
             'tournament' => $tournament->id,
-            'tab' => 'teams',
+            'tab' => 'bracket-ranking',
         ]));
 
     expect($regA->fresh()->bracket_rank)->toBe('A1');

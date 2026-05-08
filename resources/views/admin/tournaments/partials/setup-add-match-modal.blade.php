@@ -22,6 +22,7 @@
         @if ($tournament->registrations->count() >= 2)
             <form method="POST" action="{{ route('admin.tournaments.matches.store') }}" class="space-y-4">
                 @csrf
+                <input type="hidden" name="match_form_intent" value="general_match_add">
                 <input type="hidden" name="tournament_id" value="{{ $tournament->id }}">
                 <input type="hidden" name="match_tournament_id" value="{{ $tournament->id }}">
                 <input type="hidden" name="redirect_route" value="admin.tournaments.index">

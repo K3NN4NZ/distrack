@@ -157,10 +157,9 @@ test('round robin tab no longer shows the tournament profile form', function () 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
         ->assertOk()
         ->assertSee('Round Robin')
-        ->assertSee('Robins are created manually.')
-        ->assertSee('No pitches yet. Manual robins can still be created without a field assignment, or you can add a pitch first.')
-        ->assertDontSee('Generate Round Robin')
-        ->assertDontSee('Regenerate Round Robin')
+        ->assertSee('Generate Bracket Round Robin')
+        ->assertSee('No pitches yet')
+        ->assertSee('Add a pitch to start building the Day 1 board.')
         ->assertDontSee('Tournament Profile')
         ->assertDontSee('Save Tournament Changes');
 });
@@ -235,11 +234,8 @@ test('round robin tab shows per-pitch schedule actions for assigned matches', fu
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
         ->assertOk()
-        ->assertSee('Add Robin Here')
-        ->assertSee('Only teams from the selected bracket will load into the matchup fields.')
+        ->assertSee('Add Match')
         ->assertSee('Pitch Schedule')
-        ->assertSee('Delete Robin')
-        ->assertSee('Set Schedule')
         ->assertSee('Sky Riders')
         ->assertSee('Flight Paths');
 });
@@ -479,7 +475,7 @@ test('legacy round robin generator endpoint no longer creates matches even when 
         'is_public' => false,
     ]);
 
-    Pitch::query()->create([
+    $pitch1 = Pitch::query()->create([
         'tournament_id' => $tournament->id,
         'name' => 'Pitch 1',
         'location' => 'North Field',
@@ -487,7 +483,7 @@ test('legacy round robin generator endpoint no longer creates matches even when 
         'is_active' => true,
     ]);
 
-    Pitch::query()->create([
+    $pitch2 = Pitch::query()->create([
         'tournament_id' => $tournament->id,
         'name' => 'Pitch 2',
         'location' => 'South Field',
@@ -521,7 +517,7 @@ test('legacy round robin generator endpoint no longer creates matches even when 
         'redirect_tab' => 'round-robin',
     ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHasErrors(['round_robin']);
+        ->assertSessionHas('status', 'round-robin-generated');
 
     $matches = TournamentMatch::query()
         ->where('tournament_id', $tournament->id)
@@ -529,7 +525,12 @@ test('legacy round robin generator endpoint no longer creates matches even when 
         ->orderBy('match_number')
         ->get();
 
-    expect($matches)->toHaveCount(0);
+    expect($matches)->toHaveCount(20);
+    expect($matches->where('pitch_id', $pitch1->id))->toHaveCount(10);
+    expect($matches->where('pitch_id', $pitch2->id))->toHaveCount(10);
+    expect($matches->where('status', 'completed'))->toHaveCount(20);
+    expect($matches->where('home_score', 0))->toHaveCount(20);
+    expect($matches->where('away_score', 0))->toHaveCount(20);
 });
 
 test('admin users cannot create a duplicate round robin matchup for the same two teams', function () {
@@ -1217,8 +1218,8 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
         ->assertOk()
         ->assertSee('Tournament Scoring Console')
-        ->assertSee('Games Ready for Score Entry')
-        ->assertSee('Input Score')
+        ->assertSee('Open the match list below and enter final scores without full tournament setup access.')
+        ->assertSee('Games Dashboard')
         ->assertDontSee('Create Tournament')
         ->assertDontSee('Add Pitch')
         ->assertDontSee('Register Team')
@@ -1228,7 +1229,7 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
         ->assertSee('Game Score')
-        ->assertSee('Manual Score Entry');
+        ->assertSee('Match Control');
 });
 
 test('admin users cannot enter match scores', function () {
@@ -1346,6 +1347,10 @@ test('scorekeepers cannot use admin-only tournament mutation routes', function (
         'edit_barangay' => 'Poblacion',
         'edit_country_name' => 'Philippines',
         'edit_status' => 'draft',
+    ])->assertForbidden();
+
+    $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
     ])->assertForbidden();
 });
 
@@ -2121,7 +2126,7 @@ test('scorekeepers can record live scoring plays and rebuild match totals', func
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
         ->assertSee('Game Score')
-        ->assertSee('Manual Score Entry')
+        ->assertSee('Match Control')
         ->assertSee('Manila Storm')
         ->assertSee('Cebu Breakers');
 
@@ -2273,7 +2278,7 @@ test('scorekeepers can enter a completed game score manually from the scoring pa
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
-        ->assertSee('Manual Score Entry')
+        ->assertSee('Match Control')
         ->assertDontSee('Add Scoring Play');
 
     $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
@@ -2457,4 +2462,154 @@ test('admin users can update tournament details', function () {
         ['label' => 'Livestream', 'href' => 'https://example.com/live'],
     ]);
     expect($tournament->is_public)->toBeFalse();
+});
+
+test('admin can generate automatic crossover mirror matches between two brackets', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Mirror Cup',
+        'slug' => 'crossover-mirror-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 1',
+        'location' => null,
+        'sort_order' => 1,
+    ]);
+
+    $registrationsA = [];
+    $registrationsB = [];
+
+    foreach (range(1, 5) as $n) {
+        $teamA = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => "Mirror Team A{$n}",
+            'status' => 'active',
+        ]);
+        $registrationsA[$n] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teamA->id,
+            'status' => 'approved',
+            'seed_number' => $n,
+            'bracket_code' => 'Bracket A',
+            'bracket_rank' => 'A'.$n,
+        ]);
+
+        $teamB = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => "Mirror Team B{$n}",
+            'status' => 'active',
+        ]);
+        $registrationsB[$n] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teamB->id,
+            'status' => 'approved',
+            'seed_number' => $n,
+            'bracket_code' => 'Bracket B',
+            'bracket_rank' => 'B'.$n,
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+        'redirect_tab' => 'crossover',
+        'redirect_route' => 'admin.tournaments.index',
+    ])->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'crossover']));
+
+    $crossoverMatches = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'crossover')
+        ->orderBy('match_number')
+        ->get();
+
+    expect($crossoverMatches)->toHaveCount(5);
+
+    foreach (range(1, 5) as $rank) {
+        $homeId = $registrationsA[$rank]->id;
+        $awayId = $registrationsB[6 - $rank]->id;
+
+        $paired = $crossoverMatches->contains(fn (TournamentMatch $match): bool => (int) $match->home_registration_id === $homeId
+            && (int) $match->away_registration_id === $awayId);
+
+        expect($paired)->toBeTrue();
+    }
+});
+
+test('generating crossover twice skips pairing duplicates', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Dedupe Cup',
+        'slug' => 'crossover-dedupe-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    foreach (range(1, 2) as $n) {
+        $teamA = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => "Dedupe A{$n}",
+            'status' => 'active',
+        ]);
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teamA->id,
+            'status' => 'approved',
+            'seed_number' => $n,
+            'bracket_code' => 'Bracket A',
+            'bracket_rank' => 'A'.$n,
+        ]);
+
+        $teamB = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => "Dedupe B{$n}",
+            'status' => 'active',
+        ]);
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teamB->id,
+            'status' => 'approved',
+            'seed_number' => $n,
+            'bracket_code' => 'Bracket B',
+            'bracket_rank' => 'B'.$n,
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $first = $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+    ]);
+
+    $first->assertRedirect();
+    expect(TournamentMatch::query()->where('tournament_id', $tournament->id)->where('stage', 'crossover')->count())->toBe(2);
+
+    $second = $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id]))->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+    ]);
+
+    $second->assertRedirect();
+
+    expect(TournamentMatch::query()->where('tournament_id', $tournament->id)->where('stage', 'crossover')->count())->toBe(2);
+
+    $second->assertSessionHas('crossover_matches_created', 0)
+        ->assertSessionHas('crossover_matches_skipped_duplicates', 2);
 });

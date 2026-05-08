@@ -31,7 +31,7 @@
             <input type="hidden" name="tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="registration_tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-            <input type="hidden" name="redirect_tab" value="teams">
+            <input type="hidden" name="redirect_tab" value="bracket-ranking">
 
             <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 {{ __('Team') }}

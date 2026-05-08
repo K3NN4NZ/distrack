@@ -1,5 +1,5 @@
 @php
-    $pitchModalRedirectTab = $redirectTab ?? 'pitches';
+    $pitchModalRedirectTab = $redirectTab ?? 'crossover';
     $editPitchOldId = old('edit_pitch_id');
     $isThisPitchInOld = $editPitchOldId !== null && (int) $editPitchOldId === (int) $pitch->id;
 @endphp
@@ -11,9 +11,9 @@
     <div class="space-y-6">
         <div class="flex items-start justify-between gap-4">
             <div>
-                <flux:heading size="lg">{{ __('Edit Pitch') }}</flux:heading>
+                <flux:heading size="lg">{{ __('Edit playing field') }}</flux:heading>
                 <flux:text class="mt-1">
-                    {{ __('Update the pitch details for :tournament.', ['tournament' => $tournament->name]) }}
+                    {{ __('Update this surface for :tournament.', ['tournament' => $tournament->name]) }}
                 </flux:text>
             </div>
 
@@ -33,7 +33,7 @@
 
             <flux:input
                 name="name"
-                :label="__('Pitch Name')"
+                :label="__('Field name')"
                 :value="$isThisPitchInOld ? old('name', $pitch->name) : $pitch->name"
                 type="text"
                 required

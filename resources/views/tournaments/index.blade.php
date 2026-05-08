@@ -65,10 +65,31 @@
         : 'Select Year and Month';
     $selectedCountryLabel = $filters['country'] ?: 'All Countries';
     $selectedTypeLabel = $filters['type'] ?: $filters['division'] ?: $filters['surface'] ?: $filters['event_type'] ?: 'All Types';
-    $monthPickerOptions = collect(range(1, 12))->map(fn (int $monthNumber) => [
-        'value' => sprintf('%04d-%02d', $filters['picker_year'], $monthNumber),
-        'label' => \Carbon\CarbonImmutable::create($filters['picker_year'], $monthNumber, 1)->format('M'),
+    $pickerMiniMonth = \Carbon\CarbonImmutable::create($filters['picker_year'], $filters['picker_month'], 1);
+    $pickerMiniMonthEnd = $pickerMiniMonth->endOfMonth();
+    $pickerMiniGridStart = $pickerMiniMonth->startOfWeek(\Carbon\CarbonImmutable::MONDAY);
+    $pickerMiniGridEnd = $pickerMiniMonthEnd->endOfWeek(\Carbon\CarbonImmutable::SUNDAY);
+    $pickerMiniWeeks = collect();
+    $__miniCursor = $pickerMiniGridStart;
+    while ($__miniCursor->lessThanOrEqualTo($pickerMiniGridEnd)) {
+        $weekDays = collect();
+        for ($__i = 0; $__i < 7; $__i++) {
+            $weekDays->push($__miniCursor);
+            $__miniCursor = $__miniCursor->addDay();
+        }
+        $pickerMiniWeeks->push($weekDays);
+    }
+    $pickerMiniBrowsePrev = $pickerMiniMonth->subMonth()->startOfMonth();
+    $pickerMiniBrowseNext = $pickerMiniMonth->addMonth()->startOfMonth();
+    $pickerMiniPrevMonthBrowseUrl = $boardUrl([
+        'picker_year' => $pickerMiniBrowsePrev->year,
+        'picker_month' => $pickerMiniBrowsePrev->month,
     ]);
+    $pickerMiniNextMonthBrowseUrl = $boardUrl([
+        'picker_year' => $pickerMiniBrowseNext->year,
+        'picker_month' => $pickerMiniBrowseNext->month,
+    ]);
+    $pickerMiniToday = \Carbon\CarbonImmutable::today();
     $clearSearchUrl = $boardUrl(['search' => null]);
     $clearMonthUrl = $boardUrl(['month' => null, 'day' => null]);
     $clearCountryUrl = $boardUrl(['country' => null]);
@@ -129,47 +150,109 @@
             </form>
 
             <div class="space-y-3">
-                <details class="rounded-[1.7rem] border border-zinc-200 bg-white shadow-[0_16px_40px_-36px_rgba(15,23,42,0.25)] [&_summary::-webkit-details-marker]:hidden" @if (request()->filled('month')) open @endif>
-                    <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4">
-                        <div class="flex items-center gap-3">
+                <details class="rounded-[1.25rem] border border-zinc-200 bg-white shadow-[0_16px_40px_-36px_rgba(15,23,42,0.25)] [&_summary::-webkit-details-marker]:hidden" @if (request()->filled('month')) open @endif>
+                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                        <div class="flex items-center gap-2.5">
                             <span class="text-zinc-500">
-                                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M8 2v4m8-4v4M4.5 9.5h15M6.75 4.5h10.5A2.25 2.25 0 0 1 19.5 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 17.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z" />
                                 </svg>
                             </span>
-                            <div class="text-xl font-semibold tracking-tight text-zinc-900">{{ $selectedMonthLabel }}</div>
+                            <div class="text-base font-semibold tracking-tight text-zinc-900">{{ $selectedMonthLabel }}</div>
                         </div>
 
                         <span class="text-zinc-500">
-                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                 <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L10.94 10 7.23 6.29a.75.75 0 1 1 1.06-1.06l4.24 4.24a.75.75 0 0 1 0 1.06l-4.24 4.24a.75.75 0 0 1-1.08 0Z" clip-rule="evenodd" />
                             </svg>
                         </span>
                     </summary>
 
-                    <div class="border-t border-zinc-100 px-5 py-5">
+                    <div class="border-t border-zinc-100 px-4 py-4">
                         <div class="flex items-center justify-between">
-                            <a href="{{ $pickerPreviousYearUrl }}" class="text-3xl font-semibold text-zinc-400 transition hover:text-zinc-700" wire:navigate.preserve-scroll>&lt;</a>
-                            <div class="text-4xl font-semibold tracking-tight text-zinc-400">{{ $filters['picker_year'] }}</div>
-                            <a href="{{ $pickerNextYearUrl }}" class="text-3xl font-semibold text-zinc-400 transition hover:text-zinc-700" wire:navigate.preserve-scroll>&gt;</a>
+                            <a href="{{ $pickerPreviousYearUrl }}" class="text-xl font-semibold text-zinc-400 transition hover:text-zinc-700" wire:navigate.preserve-scroll>&lt;</a>
+                            <div class="text-2xl font-semibold tracking-tight text-zinc-400">{{ $filters['picker_year'] }}</div>
+                            <a href="{{ $pickerNextYearUrl }}" class="text-xl font-semibold text-zinc-400 transition hover:text-zinc-700" wire:navigate.preserve-scroll>&gt;</a>
                         </div>
 
-                        <div class="mt-5 grid grid-cols-3 gap-y-6 text-center">
-                            @foreach ($monthPickerOptions as $monthOption)
-                                <a
-                                    href="{{ $boardUrl(['month' => $monthOption['value'], 'day' => null, 'picker_year' => $filters['picker_year']]) }}"
-                                    class="text-2xl font-semibold transition {{ request()->filled('month') && $filters['month'] === $monthOption['value']
-                                        ? 'text-[#2f55b7]'
-                                        : 'text-zinc-400 hover:text-zinc-700' }}"
-                                    wire:navigate.preserve-scroll
-                                >
-                                    {{ $monthOption['label'] }}
-                                </a>
+                        <div class="mt-3 flex items-center justify-between gap-2">
+                            <a
+                                href="{{ $pickerMiniPrevMonthBrowseUrl }}"
+                                class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 text-zinc-500 transition hover:border-zinc-300 hover:text-zinc-900"
+                                aria-label="Previous month"
+                                wire:navigate.preserve-scroll
+                            >
+                                <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M11.78 4.22a.75.75 0 0 1 0 1.06L7.56 9.5h8.69a.75.75 0 0 1 0 1.5H7.56l4.22 4.22a.75.75 0 1 1-1.06 1.06l-5.5-5.5a.75.75 0 0 1 0-1.06l5.5-5.5a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd" />
+                                </svg>
+                            </a>
+                            <div class="min-w-0 flex-1 text-center text-sm font-semibold text-zinc-800">{{ $pickerMiniMonth->format('F') }}</div>
+                            <a
+                                href="{{ $pickerMiniNextMonthBrowseUrl }}"
+                                class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 text-zinc-500 transition hover:border-zinc-300 hover:text-zinc-900"
+                                aria-label="Next month"
+                                wire:navigate.preserve-scroll
+                            >
+                                <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M8.22 15.78a.75.75 0 0 1 0-1.06l4.22-4.22H3.75a.75.75 0 0 1 0-1.5h8.69L8.22 4.78a.75.75 0 0 1 1.06-1.06l5.5 5.5a.75.75 0 0 1 0 1.06l-5.5 5.5a.75.75 0 0 1-1.06 0Z" clip-rule="evenodd" />
+                                </svg>
+                            </a>
+                        </div>
+
+                        <div class="mt-2 grid grid-cols-7 gap-1 text-center text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-400">
+                            @foreach ($calendarWeekdays as $weekday)
+                                <div class="py-1">{{ $weekday }}</div>
                             @endforeach
                         </div>
 
-                        <div class="mt-5 flex justify-end">
-                            <a href="{{ $clearMonthUrl }}" class="text-sm font-medium text-zinc-500 transition hover:text-zinc-900" wire:navigate.preserve-scroll">Clear month</a>
+                        <div class="mt-1 space-y-1">
+                            @foreach ($pickerMiniWeeks as $__week)
+                                <div class="grid grid-cols-7 gap-1">
+                                    @foreach ($__week as $__day)
+                                        @php
+                                            $__inMiniMonth = $__day->isSameMonth($pickerMiniMonth);
+                                            $__filteredHere = $__inMiniMonth && request()->filled('month') && $filters['month'] === $__day->format('Y-m');
+                                            $__miniDayClasses = ! $__inMiniMonth
+                                                ? 'text-zinc-300 hover:bg-zinc-50'
+                                                : ($__filteredHere
+                                                    ? 'border-[#dbe7ff] bg-[#f4f8ff] font-semibold text-[#2f55b7]'
+                                                    : 'border-transparent text-zinc-700 hover:bg-zinc-50');
+                                            $__todayRing = $__inMiniMonth && $__day->equalTo($pickerMiniToday)
+                                                ? 'ring-2 ring-[#67dfbe]/55 ring-offset-1'
+                                                : '';
+                                        @endphp
+                                        @if ($__inMiniMonth)
+                                            <a
+                                                href="{{ $boardUrl([
+                                                    'month' => $__day->format('Y-m'),
+                                                    'day' => null,
+                                                    'picker_year' => $__day->year,
+                                                    'picker_month' => $__day->month,
+                                                ]) }}"
+                                                class="flex aspect-square items-center justify-center rounded-lg border text-xs transition {{ $__miniDayClasses }} {{ $__todayRing }}"
+                                                wire:navigate.preserve-scroll
+                                            >
+                                                {{ $__day->day }}
+                                            </a>
+                                        @else
+                                            <a
+                                                href="{{ $boardUrl([
+                                                    'picker_year' => $__day->year,
+                                                    'picker_month' => $__day->month,
+                                                ]) }}"
+                                                class="flex aspect-square items-center justify-center rounded-lg border border-transparent text-xs transition {{ $__miniDayClasses }}"
+                                                wire:navigate.preserve-scroll
+                                            >
+                                                {{ $__day->day }}
+                                            </a>
+                                        @endif
+                                    @endforeach
+                                </div>
+                            @endforeach
+                        </div>
+
+                        <div class="mt-4 flex justify-end">
+                            <a href="{{ $clearMonthUrl }}" class="text-xs font-medium text-zinc-500 transition hover:text-zinc-900" wire:navigate.preserve-scroll>Clear month</a>
                         </div>
                     </div>
                 </details>

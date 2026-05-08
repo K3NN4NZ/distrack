@@ -59,11 +59,11 @@
     <div class="space-y-6">
         <div class="flex items-start justify-between gap-4">
             <div>
-                <flux:heading size="lg">{{ __('Add Robin') }}</flux:heading>
+                <flux:heading size="lg">{{ __('Add Round Robin Match') }}</flux:heading>
                 <flux:text class="mt-1">
                     {{ isset($pitch) && $pitch
-                        ? __('Choose the teams for :pitch and set the schedule for this robin.', ['pitch' => $pitch->name])
-                        : __('Manually pair teams and assign a pitch for a robin.') }}
+                        ? __('Choose the teams for :pitch and set the schedule for this match.', ['pitch' => $pitch->name])
+                        : __('Manually pair teams and assign a pitch for a round robin match.') }}
                 </flux:text>
             </div>
 
@@ -264,18 +264,18 @@
                     @endif
 
                     <flux:input name="round_label" :label="__('Round Label')" :value="old('round_label')" type="text" placeholder="{{ __('e.g. Round 1 - Bracket A') }}" />
-                    <flux:input name="match_number" :label="__('Robin Number')" :value="old('match_number')" type="number" min="1" />
+                    <flux:input name="match_number" :label="__('Match Number')" :value="old('match_number')" type="number" min="1" />
                 </div>
 
                 <flux:input name="scheduled_at" :label="__('Scheduled At')" :value="old('scheduled_at')" type="datetime-local" />
 
                 <flux:button type="submit" variant="primary" class="w-full">
-                    {{ __('Add Robin') }}
+                    {{ __('Add Match') }}
                 </flux:button>
             </form>
         @else
             <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                {{ __('Register at least two teams before creating a robin.') }}
+                {{ __('Register at least two teams before creating a round robin match.') }}
             </div>
         @endif
     </div>

@@ -40,6 +40,9 @@ class PublicTournamentController extends Controller
             $request,
         );
 
+        $pickerYear = $this->normalizeCalendarPickerYear($request, $calendar['month']);
+        $pickerMonth = $this->normalizeCalendarPickerMonth($request, $pickerYear, $calendar['month']);
+
         return view('tournaments.index', [
             'tournaments' => $tournaments,
             'filters' => [
@@ -53,7 +56,8 @@ class PublicTournamentController extends Controller
                 'event_type' => trim($request->string('event_type')->toString()),
                 'month' => $calendar['month']->format('Y-m'),
                 'day' => $calendar['selected_day']->format('Y-m-d'),
-                'picker_year' => $this->normalizeCalendarPickerYear($request, $calendar['month']),
+                'picker_year' => $pickerYear,
+                'picker_month' => $pickerMonth,
             ],
             'periodCounts' => [
                 'upcoming' => $this->applyPeriod(clone $filteredQuery, 'upcoming', $today)->count(),
@@ -2452,6 +2456,29 @@ class PublicTournamentController extends Controller
         }
 
         return $selectedMonth->year;
+    }
+
+    /**
+     * Normalize the month shown in the public board calendar picker grid.
+     */
+    protected function normalizeCalendarPickerMonth(Request $request, int $pickerYear, CarbonImmutable $boardMonth): int
+    {
+        $requested = (int) $request->integer('picker_month');
+
+        if ($requested >= 1 && $requested <= 12) {
+            return $requested;
+        }
+
+        $parsedMonth = $this->parseCalendarMonth($request->string('month')->toString());
+        if ($parsedMonth && $parsedMonth->year === $pickerYear) {
+            return $parsedMonth->month;
+        }
+
+        if ($boardMonth->year === $pickerYear) {
+            return $boardMonth->month;
+        }
+
+        return 1;
     }
 
     /**

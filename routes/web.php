@@ -76,6 +76,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/{tournament}/bracket-ranking/apply', 'applyBracketRanking')->name('bracket-ranking.apply');
                 Route::post('/registrations', 'storeRegistration')->name('registrations.store');
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
+                Route::post('/matches/crossover/generate', 'generateCrossoverSchedule')->name('matches.crossover.generate');
                 Route::post('/matches', 'storeMatch')->name('matches.store');
                 Route::put('/matches/{match}', 'updateMatch')->name('matches.update');
                 Route::delete('/matches/{match}', 'destroyMatch')->name('matches.destroy');
