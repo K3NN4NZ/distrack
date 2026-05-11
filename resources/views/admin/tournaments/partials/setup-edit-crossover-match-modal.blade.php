@@ -52,10 +52,19 @@
                 method="POST"
                 action="{{ route('admin.tournaments.matches.update', ['match' => $match->id]) }}"
                 class="space-y-4"
+                x-ref="form"
                 x-data="{
+                    initialHome: @js($initialHome),
+                    initialAway: @js($initialAway),
                     home: @js($initialHome),
                     away: @js($initialAway),
                     teams: @js($teamCatalog),
+                    reset() {
+                        this.$refs.form.reset();
+                        this.home = this.initialHome;
+                        this.away = this.initialAway;
+                        this.syncSelections();
+                    },
                     homeBracket() {
                         const row = this.teams.find((t) => t.id === this.home);
 
@@ -102,7 +111,8 @@
                         }
                     },
                 }"
-                x-init="$watch('home', () => syncSelections()); $watch('away', () => syncSelections());"
+                x-init="$watch('home', () => syncSelections()); $watch('away', () => syncSelections()); syncSelections();"
+                x-on:crossover-match-edit-opened.window="if (String($event.detail.matchId) === @js((string) $match->id)) { reset(); }"
             >
                 @csrf
                 @method('PUT')
@@ -120,9 +130,27 @@
                             class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
                         >
                             <option value="">{{ __('Select team') }}</option>
-                            <template x-for="team in homeOptions()" :key="team.id">
-                                <option :value="team.id" x-text="team.label"></option>
-                            </template>
+                            @foreach ($rankedRegistrations as $registration)
+                                @php
+                                    $registrationId = (string) $registration->id;
+                                    $registrationBracket = (string) (BracketCodes::normalize($registration->bracket_code) ?? '');
+                                    $registrationLabel = $registration->team->name
+                                        .' - '.($registration->bracket_rank ?? '')
+                                        .($registration->bracket_code ? ' ('.$registration->bracket_code.')' : '');
+                                @endphp
+                                <option
+                                    value="{{ $registrationId }}"
+                                    @selected($initialHome === $registrationId)
+                                    x-bind:disabled="
+                                        (away !== '' && away === '{{ $registrationId }}')
+                                        || (awayBracket() !== '' && awayBracket() === '{{ $registrationBracket }}' && home !== '{{ $registrationId }}')
+                                    "
+                                    x-bind:hidden="
+                                        (away !== '' && away === '{{ $registrationId }}')
+                                        || (awayBracket() !== '' && awayBracket() === '{{ $registrationBracket }}' && home !== '{{ $registrationId }}')
+                                    "
+                                >{{ $registrationLabel }}</option>
+                            @endforeach
                         </select>
                     </label>
 
@@ -135,9 +163,27 @@
                             class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
                         >
                             <option value="">{{ __('Select team') }}</option>
-                            <template x-for="team in awayOptions()" :key="team.id">
-                                <option :value="team.id" x-text="team.label"></option>
-                            </template>
+                            @foreach ($rankedRegistrations as $registration)
+                                @php
+                                    $registrationId = (string) $registration->id;
+                                    $registrationBracket = (string) (BracketCodes::normalize($registration->bracket_code) ?? '');
+                                    $registrationLabel = $registration->team->name
+                                        .' - '.($registration->bracket_rank ?? '')
+                                        .($registration->bracket_code ? ' ('.$registration->bracket_code.')' : '');
+                                @endphp
+                                <option
+                                    value="{{ $registrationId }}"
+                                    @selected($initialAway === $registrationId)
+                                    x-bind:disabled="
+                                        (home !== '' && home === '{{ $registrationId }}')
+                                        || (homeBracket() !== '' && homeBracket() === '{{ $registrationBracket }}' && away !== '{{ $registrationId }}')
+                                    "
+                                    x-bind:hidden="
+                                        (home !== '' && home === '{{ $registrationId }}')
+                                        || (homeBracket() !== '' && homeBracket() === '{{ $registrationBracket }}' && away !== '{{ $registrationId }}')
+                                    "
+                                >{{ $registrationLabel }}</option>
+                            @endforeach
                         </select>
                     </label>
                 </div>

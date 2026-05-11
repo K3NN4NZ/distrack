@@ -14,7 +14,7 @@ class Pitch extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['tournament_id', 'name', 'location', 'sort_order', 'is_active'];
+    protected $fillable = ['tournament_id', 'scorekeeper_user_id', 'name', 'location', 'sort_order', 'is_active'];
 
     /**
      * @return array<string, string>
@@ -36,10 +36,31 @@ class Pitch extends Model
     }
 
     /**
+     * Scorekeeper assigned to manage games on this pitch.
+     */
+    public function assignedScorekeeper(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'scorekeeper_user_id');
+    }
+
+    /**
      * Matches played on this pitch.
      */
     public function matches(): HasMany
     {
         return $this->hasMany(TournamentMatch::class);
+    }
+
+    /**
+     * Whether a scorekeeper user may enter scores for games on this pitch.
+     * Unassigned pitches are open to any scorekeeper; assigned pitches are exclusive.
+     */
+    public function allowsScorekeeperUserId(int $userId): bool
+    {
+        if ($this->scorekeeper_user_id === null) {
+            return true;
+        }
+
+        return (int) $this->scorekeeper_user_id === $userId;
     }
 }

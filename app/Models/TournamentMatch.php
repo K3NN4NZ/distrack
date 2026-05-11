@@ -12,6 +12,17 @@ class TournamentMatch extends Model
     use HasFactory;
 
     /**
+     * Embedded in `notes` for crossover rows created by automatic crossover generation,
+     * so they can be replaced idempotently without touching manual crossover games.
+     */
+    public const CROSSOVER_AUTO_GENERATED_MARKER = '[[crossover:auto-generated]]';
+
+    /**
+     * Embedded in `notes` for quarter-final rows created by “generate from pooling”, so they can be replaced idempotently.
+     */
+    public const QUARTER_FINAL_AUTO_GENERATED_MARKER = '[[quarterfinal:auto-generated]]';
+
+    /**
      * @var string
      */
     protected $table = 'matches';
@@ -19,7 +30,7 @@ class TournamentMatch extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['tournament_id', 'pitch_id', 'home_registration_id', 'away_registration_id', 'stage', 'round_label', 'match_number', 'scheduled_at', 'status', 'home_score', 'away_score', 'notes'];
+    protected $fillable = ['tournament_id', 'pitch_id', 'pitch_assigned_by', 'home_registration_id', 'away_registration_id', 'stage', 'round_label', 'match_number', 'scheduled_at', 'status', 'home_score', 'away_score', 'notes'];
 
     /**
      * @return array<string, string>
@@ -48,6 +59,14 @@ class TournamentMatch extends Model
     public function pitch(): BelongsTo
     {
         return $this->belongsTo(Pitch::class);
+    }
+
+    /**
+     * User who last set or changed the pitch assignment (crossover / manual setup).
+     */
+    public function pitchAssignedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'pitch_assigned_by');
     }
 
     /**
@@ -80,5 +99,15 @@ class TournamentMatch extends Model
     public function scoreLogs(): HasMany
     {
         return $this->hasMany(MatchScoreLog::class, 'match_id')->orderBy('sequence');
+    }
+
+    /**
+     * Next global game number for this tournament (highest existing match_number + 1).
+     */
+    public static function nextMatchNumberForTournament(int $tournamentId): int
+    {
+        $max = static::query()->where('tournament_id', $tournamentId)->max('match_number');
+
+        return (int) ($max ?? 0) + 1;
     }
 }

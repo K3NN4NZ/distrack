@@ -27,6 +27,11 @@
     $initialRegistrationId = (string) old('team_registration_id', $homeRegistration?->id);
     $initialScorerId = (string) old('team_member_id');
     $initialAssisterId = (string) old('assist_team_member_id');
+    $setupBackTab = match ($match->stage) {
+        'crossover' => 'crossover',
+        'pool', 'pool_play', 'pooling' => 'pooling',
+        default => 'quarter-final',
+    };
 @endphp
 
 <x-layouts::app :title="__('Game Score')">
@@ -35,7 +40,7 @@
             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                     <a
-                        href="{{ route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'matches']) }}"
+                        href="{{ route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => $setupBackTab]) }}"
                         wire:navigate
                         class="inline-flex items-center gap-2 text-sm font-medium text-zinc-600 transition hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white"
                     >
@@ -275,19 +280,6 @@
                             if (this.busyKey === key) this.busyKey = null;
                         }
                     },
-                    async saveLinkedAssistAndGoal(memberId, rawValue) {
-                        if (! memberId) return;
-
-                        const value = rawValue === '' || rawValue === null ? 0 : Number(rawValue);
-                        const assistsInput = document.querySelector(`input[name='player_stats[${memberId}][assists]']`);
-                        const goalsInput = document.querySelector(`input[name='player_stats[${memberId}][goals]']`);
-
-                        if (assistsInput) assistsInput.value = value;
-                        if (goalsInput) goalsInput.value = value;
-
-                        await this.saveStat(memberId, 'assists', value);
-                        await this.saveStat(memberId, 'goals', value);
-                    },
                 }"
             >
                 @foreach ([
@@ -391,11 +383,11 @@
                                                     name="player_stats[{{ $member?->id }}][assists]"
                                                     value="{{ $stat?->assists }}"
                                                     @if ($member)
-                                                        x-on:change="saveLinkedAssistAndGoal({{ $member->id }}, $event.target.value)"
+                                                        x-on:change="saveStat({{ $member->id }}, 'assists', $event.target.value)"
                                                         :class="{
-                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists' || savedKey === '{{ $member->id }}-goals',
-                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists' || errorKey === '{{ $member->id }}-goals',
-                                                            'opacity-60': busyKey === '{{ $member->id }}-assists' || busyKey === '{{ $member->id }}-goals',
+                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists',
+                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists',
+                                                            'opacity-60': busyKey === '{{ $member->id }}-assists',
                                                         }"
                                                     @endif
                                                     class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
@@ -410,11 +402,11 @@
                                                     name="player_stats[{{ $member?->id }}][goals]"
                                                     value="{{ $stat?->goals }}"
                                                     @if ($member)
-                                                        x-on:change="saveLinkedAssistAndGoal({{ $member->id }}, $event.target.value)"
+                                                        x-on:change="saveStat({{ $member->id }}, 'goals', $event.target.value)"
                                                         :class="{
-                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists' || savedKey === '{{ $member->id }}-goals',
-                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists' || errorKey === '{{ $member->id }}-goals',
-                                                            'opacity-60': busyKey === '{{ $member->id }}-assists' || busyKey === '{{ $member->id }}-goals',
+                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-goals',
+                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-goals',
+                                                            'opacity-60': busyKey === '{{ $member->id }}-goals',
                                                         }"
                                                     @endif
                                                     class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"

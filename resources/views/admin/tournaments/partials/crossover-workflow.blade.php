@@ -1,3 +1,23 @@
+@php
+    $unassignedCrossoverMatches = $crossoverMatches
+        ->filter(fn ($match) => blank($match->pitch_id))
+        ->values();
+
+    $assignedCrossoverMatchesByPitch = $crossoverMatches
+        ->filter(fn ($match) => filled($match->pitch_id))
+        ->groupBy(fn ($match) => (int) $match->pitch_id);
+
+    $crossoverPitchClearEligibleCount = $crossoverMatches->filter(
+        fn ($match): bool => filled($match->pitch_id)
+            && (string) $match->status === 'scheduled'
+            && (int) ($match->score_logs_count ?? 0) === 0,
+    )->count();
+
+    $crossoverBulkClearConfirmMessage = $crossoverPitchClearEligibleCount > 0
+        ? __('Remove all scheduled crossover games from their fields? Games that are live, completed, or already have scoring plays stay assigned. This affects :count games.', ['count' => $crossoverPitchClearEligibleCount])
+        : '';
+@endphp
+
 <section class="space-y-6">
     <section class="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-700 dark:bg-zinc-900">
         <div class="border-b border-neutral-200 bg-zinc-50 px-6 py-5 dark:border-neutral-700 dark:bg-zinc-950/70">
@@ -51,6 +71,21 @@
                                 {{ __('Add field') }}
                             </flux:button>
                         </flux:modal.trigger>
+
+                        @if ($crossoverPitchClearEligibleCount > 0)
+                            <form
+                                method="POST"
+                                action="{{ route('admin.tournaments.matches.crossover.clear-pitch-assignments', $selectedTournament) }}"
+                                class="inline"
+                                onsubmit="return confirm(@json($crossoverBulkClearConfirmMessage))"
+                            >
+                                @csrf
+                                <input type="hidden" name="redirect_tab" value="crossover">
+                                <flux:button type="submit" variant="ghost" class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
+                                    {{ __('Clear field assignments') }}
+                                </flux:button>
+                            </form>
+                        @endif
                     </div>
                 @endif
             </div>
@@ -92,6 +127,23 @@
                 </div>
             </div>
         </div>
+
+        @if (\App\Support\TournamentPooling::isCrossoverScheduleFullyResolved($crossoverMatches))
+            <div class="border-t border-emerald-200 bg-emerald-50 px-6 py-4 dark:border-emerald-900/45 dark:bg-emerald-950/30">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p class="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                        {{ __('Crossover completed. Continue to Pooling.') }}
+                    </p>
+                    <a
+                        href="{{ route('admin.tournaments.index', ['tournament' => $selectedTournament->id, 'tab' => 'pooling']) }}"
+                        wire:navigate
+                        class="inline-flex shrink-0 items-center justify-center rounded-lg border border-emerald-700 bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition hover:border-emerald-800 hover:bg-emerald-800 dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                    >
+                        {{ __('Open Pooling tab') }}
+                    </a>
+                </div>
+            </div>
+        @endif
 
         <div class="border-t border-neutral-200 px-6 py-4 dark:border-neutral-700">
             <div class="grid gap-3 text-sm md:grid-cols-3">
@@ -211,7 +263,7 @@
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
                 <h3 class="text-base font-semibold text-zinc-900 dark:text-white">{{ __('Crossover games') }}</h3>
-                <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Review pairings, scores, field assignments, and game status in one place.') }}</p>
+                <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Review pairings, then assign each saved game into the correct field bucket.') }}</p>
             </div>
             <div class="flex flex-wrap gap-2 text-xs">
                 <span class="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-3 py-1 font-medium text-zinc-700 dark:border-neutral-700 dark:text-zinc-200">
@@ -239,81 +291,88 @@
             </div>
         </div>
 
-        <div class="grid gap-3 xl:grid-cols-2">
-            @forelse ($crossoverMatches as $crossMatch)
-                @php
-                    $crossHome = $crossMatch->homeRegistration;
-                    $crossAway = $crossMatch->awayRegistration;
-                    $crossHomeRank = $crossHome?->bracket_rank;
-                    $crossAwayRank = $crossAway?->bracket_rank;
-                    $crossStatus = (string) $crossMatch->status;
-                    $crossStatusClasses = match ($crossStatus) {
-                        'live' => 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200',
-                        'completed' => 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200',
-                        default => 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200',
-                    };
-                @endphp
-                <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-                        <div class="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-                            <span class="font-medium text-zinc-700 dark:text-zinc-200">{{ $crossMatch->round_label ?: __('Crossover') }}</span>
-                            @if ($crossMatch->match_number)
-                                <span>{{ __('Game #:number', ['number' => $crossMatch->match_number]) }}</span>
-                            @endif
+        @if ($crossoverMatches->isEmpty())
+            <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
+                {{ __('No crossover games yet. Generate games when bracket pairs are ready, or add a game manually.') }}
+            </div>
+        @else
+            <div class="space-y-6">
+                <div>
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                            <h4 class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Unassigned games') }}</h4>
+                            <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Games stay here until a field is selected and saved.') }}</p>
                         </div>
-                        <span class="rounded-full border px-2.5 py-1 text-xs font-medium {{ $crossStatusClasses }}">
-                            {{ str($crossStatus)->headline() }}
+                        <span class="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                            {{ __(':count waiting for field', ['count' => $unassignedCrossoverMatches->count()]) }}
                         </span>
                     </div>
 
-                    <div class="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-                        <div class="min-w-0 rounded-lg bg-white p-3 ring-1 ring-neutral-200 dark:bg-zinc-900 dark:ring-neutral-800">
-                            <div class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Home') }}</div>
-                            <div class="mt-1 flex items-center gap-2">
-                                @if ($crossHomeRank)
-                                    <span class="inline-flex shrink-0 rounded-md bg-[#2f55b7]/10 px-2 py-1 text-xs font-bold tabular-nums text-[#2f55b7] dark:bg-blue-500/15 dark:text-blue-200">{{ $crossHomeRank }}</span>
-                                @endif
-                                <span class="min-w-0 truncate text-sm font-semibold text-zinc-900 dark:text-white">{{ $crossHome?->team?->name ?? __('TBD') }}</span>
-                            </div>
+                    @if ($unassignedCrossoverMatches->isNotEmpty())
+                        <div class="grid gap-3 xl:grid-cols-2" data-crossover-unassigned-list>
+                            @foreach ($unassignedCrossoverMatches as $crossMatch)
+                                @include('admin.tournaments.partials.crossover-match-card', ['crossMatch' => $crossMatch])
+                            @endforeach
                         </div>
-
-                        <div class="text-center text-xs font-semibold uppercase text-zinc-400">{{ __('vs') }}</div>
-
-                        <div class="min-w-0 rounded-lg bg-white p-3 ring-1 ring-neutral-200 dark:bg-zinc-900 dark:ring-neutral-800">
-                            <div class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Away') }}</div>
-                            <div class="mt-1 flex items-center gap-2">
-                                @if ($crossAwayRank)
-                                    <span class="inline-flex shrink-0 rounded-md bg-[#2f55b7]/10 px-2 py-1 text-xs font-bold tabular-nums text-[#2f55b7] dark:bg-blue-500/15 dark:text-blue-200">{{ $crossAwayRank }}</span>
-                                @endif
-                                <span class="min-w-0 truncate text-sm font-semibold text-zinc-900 dark:text-white">{{ $crossAway?->team?->name ?? __('TBD') }}</span>
-                            </div>
+                    @else
+                        <div class="rounded-xl border border-dashed border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-100">
+                            {{ __('No crossover games are waiting for field assignment.') }}
                         </div>
+                    @endif
+                </div>
+
+                <div>
+                    <div class="mb-3">
+                        <h4 class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Assigned by field') }}</h4>
+                        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            {{ __('Saved games move out of the unassigned list and into their assigned field below. Use Remove from field to send a scheduled game back to the unassigned list without deleting it. Use Delete game to permanently remove a match—including completed games and all score data—after confirming.') }}
+                        </p>
                     </div>
 
-                    <div class="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-200 pt-3 text-xs text-zinc-500 dark:border-neutral-800 dark:text-zinc-400">
-                        <div class="flex flex-wrap gap-x-4 gap-y-1">
-                            <span>{{ __('Field: :field', ['field' => $crossMatch->pitch?->name ?? __('Unassigned')]) }}</span>
-                            <span>{{ $crossMatch->scheduled_at ? $crossMatch->scheduled_at->format('M j, Y g:i A') : __('No time set') }}</span>
-                            @if ($crossMatch->home_score !== null && $crossMatch->away_score !== null)
-                                <span class="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">{{ __('Score: :home - :away', ['home' => $crossMatch->home_score, 'away' => $crossMatch->away_score]) }}</span>
-                            @endif
-                        </div>
+                    <div class="grid gap-4 lg:grid-cols-2">
+                        @foreach ($selectedTournament->pitches as $pitch)
+                            @php
+                                $pitchMatches = $assignedCrossoverMatchesByPitch->get($pitch->id, collect())->values();
+                            @endphp
+                            <section class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950" data-crossover-pitch-group="{{ $pitch->id }}">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <div class="truncate text-sm font-semibold text-zinc-900 dark:text-white">{{ $pitch->name }}</div>
+                                        <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                            {{ $pitch->location ?: __('No location provided') }}
+                                        </div>
+                                    </div>
+                                    <span class="rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
+                                        {{ trans_choice('{0} No games|{1} :count game|[2,*] :count games', $pitchMatches->count(), ['count' => $pitchMatches->count()]) }}
+                                    </span>
+                                </div>
 
-                        @if ($canCreateMatches)
-                            <flux:modal.trigger name="setup-edit-crossover-match-modal-{{ $crossMatch->id }}">
-                                <flux:button variant="ghost" size="sm">
-                                    {{ __('Edit') }}
-                                </flux:button>
-                            </flux:modal.trigger>
-                        @endif
+                                @if ($pitchMatches->isNotEmpty())
+                                    <div class="mt-4 space-y-3">
+                                        @foreach ($pitchMatches as $crossMatch)
+                                            @include('admin.tournaments.partials.crossover-match-card', [
+                                                'crossMatch' => $crossMatch,
+                                                'showCrossoverDeleteFromFieldSection' => true,
+                                            ])
+                                        @endforeach
+                                    </div>
+                                @else
+                                    <div class="mt-4 rounded-lg border border-dashed border-neutral-300 px-4 py-3 text-sm text-zinc-500 dark:border-neutral-700 dark:text-zinc-400">
+                                        {{ __('No crossover games assigned here yet.') }}
+                                    </div>
+                                @endif
+                            </section>
+                        @endforeach
                     </div>
+
+                    @if ($selectedTournament->pitches->isEmpty())
+                        <div class="mt-4 rounded-xl border border-dashed border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                            {{ __('Add a field first so saved crossover games can be placed under a location.') }}
+                        </div>
+                    @endif
                 </div>
-            @empty
-                <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300 xl:col-span-2">
-                    {{ __('No crossover games yet. Generate games when bracket pairs are ready, or add a game manually.') }}
-                </div>
-            @endforelse
-        </div>
+            </div>
+        @endif
     </section>
 
     <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">

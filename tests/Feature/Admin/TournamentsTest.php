@@ -1122,7 +1122,7 @@ test('admin users cannot manually create bracket play before 10 teams are availa
         ->count())->toBe(0);
 });
 
-test('admin format tab shows the frisbee tournament workflow', function () {
+test('admin pooling tab loads under tab=pooling and legacy format links redirect safely', function () {
     $admin = User::factory()->admin()->create();
 
     $tournament = Tournament::query()->create([
@@ -1140,19 +1140,64 @@ test('admin format tab shows the frisbee tournament workflow', function () {
     $this->actingAs($admin);
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'format']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']));
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
         ->assertOk()
-        ->assertSee('Frisbee Tournament Format')
-        ->assertSee('Day 0')
-        ->assertSee('Seeding')
-        ->assertSee('Day 1')
-        ->assertSee('Round Robin')
-        ->assertSee('Bracket Ranking')
-        ->assertSee('Crossover')
         ->assertSee('Pooling')
-        ->assertSee('Day 2')
-        ->assertSee('Quarter Finals')
-        ->assertSee('Semi-Finals')
-        ->assertSee('Championship');
+        ->assertSee('No crossover matches found yet')
+        ->assertDontSee('POOL A');
+});
+
+test('legacy tab=matches redirects to tab=quarter-final on tournament setup', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Quarter Tab Cup',
+        'slug' => 'quarter-tab-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'matches']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']));
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->assertOk()
+        ->assertSee('Quarter Finals', false)
+        ->assertSee('Generate Quarter Finals from pooling', false)
+        ->assertSee('Cannot generate Quarter Finals yet', false);
+});
+
+test('generating quarter finals without finalized pooling shows validation error', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Quarter Gen Guard Cup',
+        'slug' => 'quarter-gen-guard-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.quarter-finals.generate', $tournament), [
+        'redirect_tab' => 'quarter-final',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->assertSessionHasErrors('quarter_final');
 });
 
 test('scorekeepers can access scoring routes without full admin setup tools', function () {
@@ -1206,6 +1251,15 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
         'status' => 'scheduled',
     ]);
 
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Scorekeeper Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
     $this->actingAs($scorekeeper);
 
     $this->get(route('admin.tournaments.list'))
@@ -1218,7 +1272,7 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
         ->assertOk()
         ->assertSee('Tournament Scoring Console')
-        ->assertSee('Open the match list below and enter final scores without full tournament setup access.')
+        ->assertSee('Manage Scoring')
         ->assertSee('Games Dashboard')
         ->assertDontSee('Create Tournament')
         ->assertDontSee('Add Pitch')
@@ -1230,6 +1284,296 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
         ->assertOk()
         ->assertSee('Game Score')
         ->assertSee('Match Control');
+
+    $this->get(route('admin.tournaments.matches.scoring.shortcut', ['match' => $match]))
+        ->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+});
+
+test('scorekeepers cannot open scoring for matches assigned to another scorekeepers pitch', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeperA = User::factory()->scorekeeper()->create();
+    $scorekeeperB = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pitch Gate Cup',
+        'slug' => 'pitch-gate-cup',
+        'venue' => 'River Park',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Gate Home',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Gate Away',
+        'address' => 'Davao',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Field B Only',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeperB->id,
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'match_number' => 1,
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($scorekeeperA);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertForbidden();
+
+    $this->get(route('admin.tournaments.matches.scoring.shortcut', ['match' => $match]))
+        ->assertForbidden();
+});
+
+test('scorekeepers see games on their assigned pitches and on pitches with no assigned scorekeeper', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeperA = User::factory()->scorekeeper()->create();
+    $scorekeeperB = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Split Field Cup',
+        'slug' => 'split-field-cup',
+        'venue' => 'River Park',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitchA = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Alpha Lane',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeperA->id,
+    ]);
+
+    $pitchB = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Beta Lane',
+        'sort_order' => 2,
+        'scorekeeper_user_id' => $scorekeeperB->id,
+    ]);
+
+    $teams = collect(['Alpha Only Home', 'Alpha Only Away', 'Beta Only Home', 'Beta Only Away'])
+        ->map(function (string $label) use ($teamOwner): Team {
+            return Team::query()->create([
+                'owner_user_id' => $teamOwner->id,
+                'name' => $label,
+                'address' => 'Test City',
+                'status' => 'active',
+            ]);
+        });
+
+    $regs = $teams->map(fn (Team $team): TournamentRegistration => TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team->id,
+        'status' => 'approved',
+    ]));
+
+    $matchOnA = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitchA->id,
+        'home_registration_id' => $regs[0]->id,
+        'away_registration_id' => $regs[1]->id,
+        'stage' => 'crossover',
+        'match_number' => 1,
+        'status' => 'scheduled',
+    ]);
+
+    $matchOnB = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitchB->id,
+        'home_registration_id' => $regs[2]->id,
+        'away_registration_id' => $regs[3]->id,
+        'stage' => 'crossover',
+        'match_number' => 2,
+        'status' => 'scheduled',
+    ]);
+
+    $pitchOpen = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Open Lane',
+        'sort_order' => 3,
+        'scorekeeper_user_id' => null,
+    ]);
+
+    $openHome = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Open Lane Home',
+        'address' => 'Test City',
+        'status' => 'active',
+    ]);
+
+    $openAway = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Open Lane Away',
+        'address' => 'Test City',
+        'status' => 'active',
+    ]);
+
+    $openHomeReg = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $openHome->id,
+        'status' => 'approved',
+    ]);
+
+    $openAwayReg = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $openAway->id,
+        'status' => 'approved',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitchOpen->id,
+        'home_registration_id' => $openHomeReg->id,
+        'away_registration_id' => $openAwayReg->id,
+        'stage' => 'crossover',
+        'match_number' => 3,
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($scorekeeperA);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
+        ->assertOk()
+        ->assertSee('Alpha Only Home')
+        ->assertSee('Alpha Only Away')
+        ->assertSee('Open Lane Home')
+        ->assertSee('Open Lane Away')
+        ->assertDontSee('Beta Only Home')
+        ->assertDontSee('Beta Only Away');
+});
+
+test('scorekeepers see games and can open scoring on pitches with no assigned scorekeeper', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Unassigned Pitch Cup',
+        'slug' => 'unassigned-pitch-cup',
+        'venue' => 'River Park',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => null,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'North Home',
+        'address' => 'Test City',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'North Away',
+        'address' => 'Test City',
+        'status' => 'active',
+    ]);
+
+    $homeReg = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayReg = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $homeReg->id,
+        'away_registration_id' => $awayReg->id,
+        'stage' => 'round_robin',
+        'match_number' => 1,
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
+        ->assertOk()
+        ->assertSee('North Home')
+        ->assertSee('North Away')
+        ->assertSee('Manage Scoring');
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk();
+});
+
+test('scorekeepers are redirected away from setup tab query strings', function () {
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Tab Strip Cup',
+        'slug' => 'tab-strip-cup',
+        'venue' => 'River Park',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'crossover']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id]));
 });
 
 test('admin users cannot enter match scores', function () {
@@ -1351,6 +1695,10 @@ test('scorekeepers cannot use admin-only tournament mutation routes', function (
 
     $this->post(route('admin.tournaments.matches.crossover.generate'), [
         'tournament_id' => $tournament->id,
+    ])->assertForbidden();
+
+    $this->post(route('admin.tournaments.matches.quarter-finals.generate', $tournament), [
+        'redirect_tab' => 'quarter-final',
     ])->assertForbidden();
 });
 
@@ -2121,6 +2469,15 @@ test('scorekeepers can record live scoring plays and rebuild match totals', func
         'status' => 'scheduled',
     ]);
 
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Live Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
     $this->actingAs($scorekeeper);
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
@@ -2274,6 +2631,15 @@ test('scorekeepers can enter a completed game score manually from the scoring pa
         'status' => 'scheduled',
     ]);
 
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Manual Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
     $this->actingAs($scorekeeper);
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
@@ -2294,6 +2660,819 @@ test('scorekeepers can enter a completed game score manually from the scoring pa
     expect($match->home_score)->toBe(11);
     expect($match->away_score)->toBe(8);
     expect($match->notes)->toBe('Entered after the scheduled game finished.');
+});
+
+test('completed crossover scoring stays on scoring page and syncs default pool tags', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pooling Flow Cup',
+        'slug' => 'pooling-flow-cup',
+        'venue' => 'Central Grounds',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Pooling Home',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Pooling Away',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Pooling Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+        'status' => 'completed',
+        'home_score' => 13,
+        'away_score' => 10,
+        'notes' => 'Finished crossover match.',
+    ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+
+    $homeRegistration->refresh();
+    $awayRegistration->refresh();
+
+    expect($homeRegistration->pool_name)->toBe('POOL A');
+    expect($awayRegistration->pool_name)->toBe('POOL B');
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
+        ->assertOk()
+        ->assertSee('POOL A')
+        ->assertSee('POOL B')
+        ->assertSee('Pooling Home')
+        ->assertSee('Pooling Away')
+        ->assertSee('Crossover is complete');
+});
+
+test('crossover tab prompts admins to continue to pooling when all crossover games are resolved', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Done Cup',
+        'slug' => 'crossover-done-cup',
+        'venue' => 'Riverside',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Banner Home',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Banner Away',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 15,
+        'away_score' => 11,
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'crossover']))
+        ->assertOk()
+        ->assertSee('Crossover completed. Continue to Pooling.')
+        ->assertSee('Open Pooling tab');
+});
+
+test('pooling tab keeps pending slots when some crossover games lack decisive results', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pending Slot Cup',
+        'slug' => 'pending-slot-cup',
+        'venue' => 'North Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $teams = [];
+
+    foreach (range(1, 4) as $i) {
+        $teams[$i] = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Pending Team '.$i,
+            'address' => 'CDO',
+            'status' => 'active',
+        ]);
+    }
+
+    $reg = [];
+
+    foreach ([1 => ['A1', 'B1'], 2 => ['A2', 'B2']] as $pair => $ranks) {
+        $reg[$pair]['home'] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teams[($pair - 1) * 2 + 1]->id,
+            'status' => 'approved',
+            'seed_number' => $pair,
+            'bracket_code' => 'Bracket A',
+            'bracket_rank' => $ranks[0],
+        ]);
+        $reg[$pair]['away'] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teams[($pair - 1) * 2 + 2]->id,
+            'status' => 'approved',
+            'seed_number' => $pair,
+            'bracket_code' => 'Bracket B',
+            'bracket_rank' => $ranks[1],
+        ]);
+    }
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $reg[1]['home']->id,
+        'away_registration_id' => $reg[1]['away']->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 12,
+        'away_score' => 10,
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $reg[2]['home']->id,
+        'away_registration_id' => $reg[2]['away']->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #2',
+        'match_number' => 2,
+        'scheduled_at' => now()->addHour(),
+        'status' => 'scheduled',
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
+        ->assertOk()
+        ->assertSee('POOL A')
+        ->assertSee('POOL B')
+        ->assertSee('W2')
+        ->assertSee('Pending result')
+        ->assertSee('Pending Team 1');
+});
+
+test('pooling board JSON omits diagram slots for nonexistent crossover games when fewer than eight games exist', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Json Order Cup',
+        'slug' => 'json-order-cup',
+        'venue' => 'South Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    foreach (['One', 'Two'] as $label) {
+        Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Team '.$label.' A',
+            'address' => 'CDO',
+            'status' => 'active',
+        ]);
+        Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Team '.$label.' B',
+            'address' => 'Iligan',
+            'status' => 'active',
+        ]);
+    }
+
+    $teams = Team::query()->where('owner_user_id', $owner->id)->orderBy('id')->get();
+
+    $regs = [];
+    foreach ([1, 2] as $pairIndex) {
+        $base = ($pairIndex - 1) * 2;
+        $regs[$pairIndex]['home'] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teams[$base]->id,
+            'status' => 'approved',
+            'seed_number' => $pairIndex,
+            'bracket_code' => 'Bracket A',
+            'bracket_rank' => 'A'.$pairIndex,
+        ]);
+        $regs[$pairIndex]['away'] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $teams[$base + 1]->id,
+            'status' => 'approved',
+            'seed_number' => $pairIndex,
+            'bracket_code' => 'Bracket B',
+            'bracket_rank' => 'B'.$pairIndex,
+        ]);
+    }
+
+    foreach ([1, 2] as $num) {
+        TournamentMatch::query()->create([
+            'tournament_id' => $tournament->id,
+            'home_registration_id' => $regs[$num]['home']->id,
+            'away_registration_id' => $regs[$num]['away']->id,
+            'stage' => 'crossover',
+            'round_label' => 'Cross · A vs B #'.$num,
+            'match_number' => $num,
+            'scheduled_at' => now()->subHours(3 - $num),
+            'status' => 'completed',
+            'home_score' => 11,
+            'away_score' => 9,
+            'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $response = $this->getJson(route('admin.tournaments.pooling-board', $tournament));
+
+    $response->assertOk()
+        ->assertJsonPath('rulesConfigured', false)
+        ->assertJsonPath('poolingMode', 'auto')
+        ->assertJsonPath('crossoverGameCount', 2)
+        ->assertJsonPath('diagramBelowFullCrossoverCount', true);
+
+    $poolASlots = $response->json('pools.0.slots');
+    $poolBSlots = $response->json('pools.1.slots');
+
+    $allLabels = collect($poolASlots)->pluck('compactLabel')
+        ->merge(collect($poolBSlots)->pluck('compactLabel'))
+        ->all();
+
+    expect($allLabels)->not->toContain('W7')->not->toContain('W8')->not->toContain('L7')->not->toContain('L8');
+
+    expect($poolASlots)->toHaveCount(2)
+        ->and($poolASlots[0]['compactLabel'])->toBe('W1')
+        ->and($poolASlots[0]['sourceGameNumber'])->toBe(1)
+        ->and($poolASlots[0]['status'])->toBe('resolved')
+        ->and($poolASlots[1]['compactLabel'])->toBe('W2')
+        ->and($poolASlots[1]['sourceGameNumber'])->toBe(2)
+        ->and($poolASlots[1]['status'])->toBe('resolved');
+
+    expect($poolBSlots)->toHaveCount(2)
+        ->and($poolBSlots[0]['compactLabel'])->toBe('L2')
+        ->and($poolBSlots[1]['compactLabel'])->toBe('L1');
+});
+
+test('manual pooling rejects the same registration in Pool A and Pool B', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Manual Overlap Cup',
+        'slug' => 'manual-overlap-cup',
+        'venue' => 'Riverside',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Overlap Home',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Overlap Away',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 15,
+        'away_score' => 11,
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.pooling.manual', $tournament), [
+        'redirect_tab' => 'pooling',
+        'pool_a_registration_ids' => [$homeRegistration->id, $awayRegistration->id],
+        'pool_b_registration_ids' => [$homeRegistration->id],
+    ])->assertSessionHasErrors('pool_b_registration_ids');
+});
+
+test('admin can clear saved pool assignments without deleting crossover matches', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Pool Clear Cup',
+        'slug' => 'pool-clear-cup',
+        'venue' => 'Riverside',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Clear Home',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Clear Away',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 15,
+        'away_score' => 11,
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.pooling.manual', $tournament), [
+        'redirect_tab' => 'pooling',
+        'pool_a_registration_ids' => [$homeRegistration->id],
+        'pool_b_registration_ids' => [$awayRegistration->id],
+    ])->assertSessionHas('status', 'pooling-manual-saved');
+
+    $tournament->refresh();
+
+    expect($tournament->pooling_mode)->toBe('manual')
+        ->and($tournament->pooling_manual_slots)->toMatchArray([
+            'pool_a' => [$homeRegistration->id],
+            'pool_b' => [$awayRegistration->id],
+        ]);
+
+    $homeRegistration->refresh();
+    $awayRegistration->refresh();
+
+    expect($homeRegistration->pool_name)->toBe('POOL A');
+    expect($awayRegistration->pool_name)->toBe('POOL B');
+
+    $this->post(route('admin.tournaments.pooling.clear', $tournament), [
+        'redirect_tab' => 'pooling',
+    ])->assertSessionHas('status', 'pooling-assignments-cleared');
+
+    $tournament->refresh();
+    $homeRegistration->refresh();
+    $awayRegistration->refresh();
+
+    expect($tournament->pooling_mode)->toBe('auto')
+        ->and($tournament->pooling_manual_slots)->toBeNull();
+
+    expect($homeRegistration->pool_name)->toBeNull();
+    expect($awayRegistration->pool_name)->toBeNull();
+
+    expect(TournamentMatch::query()->where('tournament_id', $tournament->id)->where('stage', 'crossover')->count())->toBe(1);
+});
+
+test('admin can bulk clear crossover field assignments for scheduled games only', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bulk Field Clear Cup',
+        'slug' => 'bulk-field-clear-cup',
+        'venue' => 'Riverside',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+        'is_active' => true,
+    ]);
+
+    $teams = [];
+
+    foreach (range(1, 6) as $i) {
+        $teams[$i] = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Field Team '.$i,
+            'address' => 'CDO',
+            'status' => 'active',
+        ]);
+    }
+
+    $regs = [];
+
+    foreach ([
+        [1, 2, 'A1', 'B1'],
+        [3, 4, 'A2', 'B2'],
+        [5, 6, 'A3', 'B3'],
+    ] as [$ti, $tj, $rankHome, $rankAway]) {
+        $regs[] = [
+            TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $teams[$ti]->id,
+                'status' => 'approved',
+                'seed_number' => 1,
+                'bracket_code' => 'Bracket A',
+                'bracket_rank' => $rankHome,
+            ]),
+            TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $teams[$tj]->id,
+                'status' => 'approved',
+                'seed_number' => 2,
+                'bracket_code' => 'Bracket B',
+                'bracket_rank' => $rankAway,
+            ]),
+        ];
+    }
+
+    $scheduledOnField = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'pitch_assigned_by' => $admin->id,
+        'home_registration_id' => $regs[0][0]->id,
+        'away_registration_id' => $regs[0][1]->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addHour(),
+        'status' => 'scheduled',
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $scheduledOnFieldTwo = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'pitch_assigned_by' => $admin->id,
+        'home_registration_id' => $regs[1][0]->id,
+        'away_registration_id' => $regs[1][1]->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #2',
+        'match_number' => 2,
+        'scheduled_at' => now()->addHours(2),
+        'status' => 'scheduled',
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $completedOnField = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'pitch_assigned_by' => $admin->id,
+        'home_registration_id' => $regs[2][0]->id,
+        'away_registration_id' => $regs[2][1]->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #3',
+        'match_number' => 3,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 10,
+        'away_score' => 8,
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.clear-pitch-assignments', $tournament), [
+        'redirect_tab' => 'crossover',
+    ])
+        ->assertSessionHas('status', 'crossover-pitch-assignments-cleared')
+        ->assertSessionHas('crossover_pitch_assignments_cleared_count', 2);
+
+    $scheduledOnField->refresh();
+    $scheduledOnFieldTwo->refresh();
+    $completedOnField->refresh();
+
+    expect($scheduledOnField->pitch_id)->toBeNull()
+        ->and($scheduledOnField->pitch_assigned_by)->toBeNull()
+        ->and($scheduledOnFieldTwo->pitch_id)->toBeNull()
+        ->and($completedOnField->pitch_id)->toBe((int) $pitch->id);
+});
+
+test('bulk clear crossover field assignments fails when no eligible games exist', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'No Clear Cup',
+        'slug' => 'no-clear-cup',
+        'venue' => 'Riverside',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'No Clear Home',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'No Clear Away',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · A vs B #1',
+        'match_number' => 1,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'scheduled',
+        'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.clear-pitch-assignments', $tournament), [
+        'redirect_tab' => 'crossover',
+    ])->assertSessionHasErrors('crossover');
+});
+
+test('completed match player assists and goals can be updated independently via player stats', function () {
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => User::factory()->admin()->create()->id,
+        'name' => 'Split Stat Cup',
+        'slug' => 'split-stat-cup',
+        'venue' => 'North Grounds',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Split Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Split Away',
+        'address' => 'Cebu City',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $homeMember = TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'name' => 'Roster Player',
+        'gender' => 'Male',
+        'role' => 'captain',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'match_number' => 1,
+        'status' => 'completed',
+        'home_score' => 0,
+        'away_score' => 0,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Split Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $this->actingAs($scorekeeper);
+
+    $url = route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match]);
+
+    $this->patchJson($url, [
+        'team_member_id' => $homeMember->id,
+        'field' => 'assists',
+        'value' => 3,
+    ])->assertOk()->assertJson(['ok' => true]);
+
+    $this->patchJson($url, [
+        'team_member_id' => $homeMember->id,
+        'field' => 'goals',
+        'value' => 7,
+    ])->assertOk()->assertJson(['ok' => true, 'home_score' => 7, 'away_score' => 0]);
+
+    $stat = MatchPlayerStat::query()
+        ->where('match_id', $match->id)
+        ->where('team_member_id', $homeMember->id)
+        ->firstOrFail();
+
+    expect($stat->assists)->toBe(3);
+    expect($stat->goals)->toBe(7);
+
+    $match->refresh();
+    expect($match->home_score)->toBe(7);
+    expect($match->away_score)->toBe(0);
 });
 
 test('scorekeeper live scoring requires confirmation before replacing a manual scoreline', function () {
@@ -2356,6 +3535,15 @@ test('scorekeeper live scoring requires confirmation before replacing a manual s
         'home_score' => 13,
         'away_score' => 9,
     ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Replace Manual Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
 
     $this->actingAs($scorekeeper);
 
@@ -2494,6 +3682,7 @@ test('admin can generate automatic crossover mirror matches between two brackets
         $teamA = Team::query()->create([
             'owner_user_id' => $owner->id,
             'name' => "Mirror Team A{$n}",
+            'address' => 'Cagayan de Oro',
             'status' => 'active',
         ]);
         $registrationsA[$n] = TournamentRegistration::query()->create([
@@ -2508,6 +3697,7 @@ test('admin can generate automatic crossover mirror matches between two brackets
         $teamB = Team::query()->create([
             'owner_user_id' => $owner->id,
             'name' => "Mirror Team B{$n}",
+            'address' => 'Iligan',
             'status' => 'active',
         ]);
         $registrationsB[$n] = TournamentRegistration::query()->create([
@@ -2536,6 +3726,10 @@ test('admin can generate automatic crossover mirror matches between two brackets
 
     expect($crossoverMatches)->toHaveCount(5);
 
+    foreach ($crossoverMatches as $match) {
+        expect(str_contains((string) $match->notes, TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER))->toBeTrue();
+    }
+
     foreach (range(1, 5) as $rank) {
         $homeId = $registrationsA[$rank]->id;
         $awayId = $registrationsB[6 - $rank]->id;
@@ -2545,6 +3739,302 @@ test('admin can generate automatic crossover mirror matches between two brackets
 
         expect($paired)->toBeTrue();
     }
+});
+
+test('crossover generation continues global match numbering after earlier-stage matches', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Global Crossover Number Cup',
+        'slug' => 'global-crossover-number-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 1',
+        'location' => null,
+        'sort_order' => 1,
+    ]);
+
+    $teamA1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Global Num A1',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+    $teamA2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Global Num A2',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $teamB1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Global Num B1',
+        'address' => 'Bukidnon',
+        'status' => 'active',
+    ]);
+    $teamB2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Global Num B2',
+        'address' => 'Davao',
+        'status' => 'active',
+    ]);
+
+    $registrationA1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+    $registrationA2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A2',
+    ]);
+    $registrationB1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+    $registrationB2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B2',
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $registrationA1->id,
+        'away_registration_id' => $registrationA2->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Bracket A RR placeholder',
+        'match_number' => 42,
+        'scheduled_at' => now()->addHour(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+        'redirect_tab' => 'crossover',
+        'redirect_route' => 'admin.tournaments.index',
+    ])->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'crossover']));
+
+    $numbers = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'crossover')
+        ->orderBy('match_number')
+        ->pluck('match_number')
+        ->all();
+
+    expect($numbers)->toBe([43, 44]);
+});
+
+test('storing a match without match_number assigns the next global game number', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Auto Match Number Cup',
+        'slug' => 'auto-match-number-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => true,
+    ]);
+
+    foreach (range(1, 3) as $index) {
+        $team = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => "Auto Num Team {$index}",
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $index,
+            'bracket_code' => 'Bracket A',
+        ]);
+    }
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->get();
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'home_registration_id' => $registrations[0]->id,
+        'away_registration_id' => $registrations[1]->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross hold',
+        'match_number' => 100,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.store'), [
+        'match_form_intent' => 'general_match_add',
+        'tournament_id' => $tournament->id,
+        'match_tournament_id' => $tournament->id,
+        'home_registration_id' => $registrations[1]->id,
+        'away_registration_id' => $registrations[2]->id,
+        'stage' => 'quarterfinal',
+        'round_label' => 'QF Auto',
+        'status' => 'scheduled',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'quarter-final',
+    ])->assertRedirect(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'quarter-final',
+    ]))->assertSessionHasNoErrors();
+
+    $latestQuarterFinal = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'quarterfinal')
+        ->latest('id')
+        ->firstOrFail();
+
+    expect($latestQuarterFinal->match_number)->toBe(101);
+});
+
+test('crossover generation fails when a ranked team has no bracket code', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Missing Bracket Cup',
+        'slug' => 'crossover-missing-bracket-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    foreach (['A', 'B'] as $suffix) {
+        foreach (range(1, 2) as $n) {
+            $team = Team::query()->create([
+                'owner_user_id' => $owner->id,
+                'name' => "Missing Bracket {$suffix}{$n}",
+                'address' => 'Cagayan de Oro',
+                'status' => 'active',
+            ]);
+            TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'approved',
+                'seed_number' => $n,
+                'bracket_code' => $suffix === 'A' ? null : 'Bracket B',
+                'bracket_rank' => $suffix.$n,
+            ]);
+        }
+    }
+
+    $this->actingAs($admin);
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id]))
+        ->post(route('admin.tournaments.matches.crossover.generate'), [
+            'tournament_id' => $tournament->id,
+        ])
+        ->assertRedirect()
+        ->assertSessionHasErrors('crossover');
+});
+
+test('automatic crossover numbers games per bracket pair when four brackets are paired', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Four Bracket Cup',
+        'slug' => 'crossover-four-bracket-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 1',
+        'sort_order' => 1,
+    ]);
+
+    $brackets = ['Bracket A', 'Bracket B', 'Bracket C', 'Bracket D'];
+    foreach ($brackets as $bracket) {
+        $letter = strtoupper(substr($bracket, -1));
+        foreach (range(1, 2) as $n) {
+            $team = Team::query()->create([
+                'owner_user_id' => $owner->id,
+                'name' => "Four {$letter}{$n}",
+                'address' => 'Cagayan de Oro',
+                'status' => 'active',
+            ]);
+            TournamentRegistration::query()->create([
+                'tournament_id' => $tournament->id,
+                'team_id' => $team->id,
+                'status' => 'approved',
+                'seed_number' => $n,
+                'bracket_code' => $bracket,
+                'bracket_rank' => $letter.$n,
+            ]);
+        }
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+    ])->assertRedirect();
+
+    $labels = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'crossover')
+        ->orderBy('match_number')
+        ->pluck('round_label')
+        ->all();
+
+    expect($labels)->toBe([
+        'Cross · A vs B #1',
+        'Cross · A vs B #2',
+        'Cross · C vs D #1',
+        'Cross · C vs D #2',
+    ]);
 });
 
 test('generating crossover twice skips pairing duplicates', function () {
@@ -2567,6 +4057,7 @@ test('generating crossover twice skips pairing duplicates', function () {
         $teamA = Team::query()->create([
             'owner_user_id' => $owner->id,
             'name' => "Dedupe A{$n}",
+            'address' => 'Cagayan de Oro',
             'status' => 'active',
         ]);
         TournamentRegistration::query()->create([
@@ -2581,6 +4072,7 @@ test('generating crossover twice skips pairing duplicates', function () {
         $teamB = Team::query()->create([
             'owner_user_id' => $owner->id,
             'name' => "Dedupe B{$n}",
+            'address' => 'Iligan',
             'status' => 'active',
         ]);
         TournamentRegistration::query()->create([
@@ -2612,4 +4104,524 @@ test('generating crossover twice skips pairing duplicates', function () {
 
     $second->assertSessionHas('crossover_matches_created', 0)
         ->assertSessionHas('crossover_matches_skipped_duplicates', 2);
+});
+
+test('regenerating crossover after bracket rank changes replaces stale auto generated matches', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Regeneration Cup',
+        'slug' => 'crossover-regeneration-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 1',
+        'sort_order' => 1,
+    ]);
+
+    $registrationA1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Regen A1',
+            'address' => 'Cagayan de Oro',
+            'status' => 'active',
+        ])->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $registrationA2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Regen A2',
+            'address' => 'Iligan',
+            'status' => 'active',
+        ])->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A2',
+    ]);
+
+    $registrationB1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Regen B1',
+            'address' => 'Bukidnon',
+            'status' => 'active',
+        ])->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    $registrationB2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Regen B2',
+            'address' => 'Davao',
+            'status' => 'active',
+        ])->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B2',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+    ])->assertRedirect();
+
+    $registrationA1->update(['bracket_rank' => 'A2']);
+    $registrationA2->update(['bracket_rank' => 'A1']);
+
+    $second = $this->post(route('admin.tournaments.matches.crossover.generate'), [
+        'tournament_id' => $tournament->id,
+    ]);
+
+    $second->assertRedirect()
+        ->assertSessionHas('crossover_matches_created', 2)
+        ->assertSessionHas('crossover_matches_skipped_duplicates', 0);
+
+    $pairings = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'crossover')
+        ->get()
+        ->map(fn (TournamentMatch $match): string => collect([(int) $match->home_registration_id, (int) $match->away_registration_id])
+            ->sort()
+            ->implode('-'))
+        ->sort()
+        ->values()
+        ->all();
+
+    expect($pairings)->toBe([
+        collect([$registrationA1->id, $registrationB1->id])->sort()->implode('-'),
+        collect([$registrationA2->id, $registrationB2->id])->sort()->implode('-'),
+    ]);
+});
+
+test('admin can update an existing crossover match', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Update Cup',
+        'slug' => 'crossover-update-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 1',
+        'sort_order' => 1,
+    ]);
+
+    $teamA1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Update A1',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+    $registrationA1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $teamA2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Update A2',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $registrationA2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A2',
+    ]);
+
+    $teamB1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Update B1',
+        'address' => 'Davao',
+        'status' => 'active',
+    ]);
+    $registrationB1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB1->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    $teamB2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Update B2',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+    $registrationB2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB2->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B2',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'home_registration_id' => $registrationA1->id,
+        'away_registration_id' => $registrationB2->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross 1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $response = $this->put(route('admin.tournaments.matches.update', ['match' => $match]), [
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $registrationA2->id,
+        'away_registration_id' => $registrationB1->id,
+        'round_label' => 'Cross 2',
+        'match_number' => 7,
+        'scheduled_at' => now()->addDays(2)->format('Y-m-d H:i:s'),
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'crossover',
+    ]);
+
+    $response->assertRedirect(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'crossover',
+    ]));
+
+    $match->refresh();
+
+    expect($match->pitch_id)->toBe($pitch->id);
+    expect($match->pitch_assigned_by)->toBe($admin->id);
+    expect($match->home_registration_id)->toBe($registrationA2->id);
+    expect($match->away_registration_id)->toBe($registrationB1->id);
+    expect($match->round_label)->toBe('Cross 2');
+    expect($match->match_number)->toBe(7);
+
+    $this->get(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'crossover',
+    ]))
+        ->assertOk()
+        ->assertSee('No crossover games are waiting for field assignment.')
+        ->assertSee('data-crossover-pitch-group="'.$pitch->id.'"', false)
+        ->assertSee('FIELD 1')
+        ->assertSee('Update A2')
+        ->assertSee('Update B1')
+        ->assertSee('Assigned by:', false);
+});
+
+test('admin can delete crossover field assignment and move the game back to unassigned', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Unassign Cup',
+        'slug' => 'crossover-unassign-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'FIELD 9',
+        'sort_order' => 1,
+    ]);
+
+    $teamA1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Unassign A1',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+    $registrationA1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $teamB2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Unassign B2',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+    $registrationB2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B2',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'pitch_assigned_by' => $admin->id,
+        'home_registration_id' => $registrationA1->id,
+        'away_registration_id' => $registrationB2->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · Manual',
+        'match_number' => 11,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.crossover-unassign-pitch', ['match' => $match]), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'crossover',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', [
+            'tournament' => $tournament->id,
+            'tab' => 'crossover',
+        ]))
+        ->assertSessionHas('status', 'crossover-pitch-unassigned');
+
+    $match->refresh();
+
+    expect($match->pitch_id)->toBeNull();
+    expect($match->pitch_assigned_by)->toBeNull();
+
+    $this->get(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'crossover',
+    ]))
+        ->assertOk()
+        ->assertSee(__('Cross · Manual'))
+        ->assertSee(__('waiting for field'), false);
+});
+
+test('admin can delete a completed crossover game and destroy rejects wrong tournament scope', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournamentA = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Delete Cup A',
+        'slug' => 'crossover-delete-cup-a',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $tournamentB = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Delete Cup B',
+        'slug' => 'crossover-delete-cup-b',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournamentA->id,
+        'name' => 'FIELD X',
+        'sort_order' => 1,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Delete Cup A',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournamentA->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Delete Cup B',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournamentA->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B1',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournamentA->id,
+        'pitch_id' => $pitch->id,
+        'pitch_assigned_by' => $admin->id,
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross · Delete test',
+        'match_number' => 99,
+        'scheduled_at' => now()->subHour(),
+        'status' => 'completed',
+        'home_score' => 13,
+        'away_score' => 11,
+    ]);
+
+    MatchPlayerStat::query()->create([
+        'match_id' => $match->id,
+        'team_member_id' => TeamMember::query()->create([
+            'team_id' => $teamA->id,
+            'name' => 'Stat Player',
+            'gender' => 'Male',
+            'role' => 'member',
+        ])->id,
+        'goals' => 2,
+        'assists' => 1,
+        'blocks' => 0,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->delete(route('admin.tournaments.matches.destroy', ['match' => $match]), [
+        'tournament_id' => $tournamentB->id,
+    ])->assertForbidden();
+
+    expect(TournamentMatch::query()->whereKey($match->id)->exists())->toBeTrue();
+
+    $this->delete(route('admin.tournaments.matches.destroy', ['match' => $match]), [
+        'tournament_id' => $tournamentA->id,
+    ])->assertRedirect(route('admin.tournaments.index', [
+        'tournament' => $tournamentA->id,
+    ]))->assertSessionHas('status', 'match-deleted');
+
+    expect(TournamentMatch::query()->whereKey($match->id)->exists())->toBeFalse();
+    expect(MatchPlayerStat::query()->where('match_id', $match->id)->exists())->toBeFalse();
+});
+
+test('crossover edit modal preselects the existing assigned teams', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Crossover Modal Cup',
+        'slug' => 'crossover-modal-cup',
+        'venue' => 'Test Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $teamA1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Modal A1',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+    $registrationA1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+        'bracket_rank' => 'A1',
+    ]);
+
+    $teamB2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Modal B2',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+    $registrationB2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket B',
+        'bracket_rank' => 'B2',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $registrationA1->id,
+        'away_registration_id' => $registrationB2->id,
+        'stage' => 'crossover',
+        'round_label' => 'Cross 1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $response = $this->get(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'crossover',
+    ]));
+
+    $content = $response->getContent();
+
+    $response->assertOk()
+        ->assertSee('setup-edit-crossover-match-modal-'.$match->id, false)
+        ->assertSee('Modal A1 - A1 (Bracket A)', false)
+        ->assertSee('Modal B2 - B2 (Bracket B)', false);
+
+    expect(preg_match('/<option[^>]*(value="'.preg_quote((string) $registrationA1->id, '/').'"[^>]*selected|selected[^>]*value="'.preg_quote((string) $registrationA1->id, '/').'")[^>]*>/', $content))->toBe(1);
+    expect(preg_match('/<option[^>]*(value="'.preg_quote((string) $registrationB2->id, '/').'"[^>]*selected|selected[^>]*value="'.preg_quote((string) $registrationB2->id, '/').'")[^>]*>/', $content))->toBe(1);
 });

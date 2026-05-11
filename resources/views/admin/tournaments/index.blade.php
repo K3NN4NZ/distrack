@@ -10,8 +10,8 @@
         ['key' => 'round-robin', 'label' => __('Round Robin')],
         ['key' => 'bracket-ranking', 'label' => __('Bracket Ranking')],
         ['key' => 'crossover', 'label' => __('Crossover')],
-        ['key' => 'format', 'label' => __('Pooling')],
-        ['key' => 'matches', 'label' => __('Quarter Final')],
+        ['key' => 'pooling', 'label' => __('Pooling')],
+        ['key' => 'quarter-final', 'label' => __('Quarter Finals')],
         ['key' => 'crew', 'label' => __('Semi Finals')],
         ['key' => 'publish', 'label' => __('Championship')],
     ];
@@ -20,6 +20,9 @@
     $requestedTab = $requestedTab === 'basic-info' ? 'round-robin' : $requestedTab;
     $requestedTab = $requestedTab === 'teams' ? 'bracket-ranking' : $requestedTab;
     $requestedTab = $requestedTab === 'pitches' ? 'crossover' : $requestedTab;
+    $requestedTab = $requestedTab === 'format' ? 'pooling' : $requestedTab;
+    $requestedTab = $requestedTab === 'matches' ? 'quarter-final' : $requestedTab;
+    $requestedTab = $requestedTab === 'quater-final' ? 'quarter-final' : $requestedTab;
     $selectedTab = in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'overview';
 
     $pitchModalTournamentId = old('pitch_tournament_id')
@@ -117,7 +120,8 @@
         ->values();
 
     $rankedCrossoverRegistrations = collect($selectedTournament?->registrations ?? [])
-        ->filter(fn ($registration): bool => filled(trim((string) ($registration->bracket_rank ?? ''))))
+        ->filter(fn ($registration): bool => filled(trim((string) ($registration->bracket_rank ?? '')))
+            && filled(\App\Support\BracketCodes::normalize($registration->bracket_code ?? null)))
         ->sort(function ($left, $right): int {
             return [
                 $left->bracket_code ?? '',
@@ -273,6 +277,24 @@
                         @case('match-deleted')
                             {{ __('Match deleted successfully.') }}
                             @break
+                        @case('crossover-pitch-unassigned')
+                            {{ __('Crossover game removed from the field and moved back to the unassigned list.') }}
+                            @break
+                        @case('pooling-auto-applied')
+                            {{ __('Diagram pooling applied. Registration pool tags were rebuilt from crossover results.') }}
+                            @break
+                        @case('pooling-manual-saved')
+                            {{ __('Manual Pool A / Pool B assignments saved.') }}
+                            @break
+                        @case('pooling-assignments-cleared')
+                            {{ __('Saved pool assignments were cleared. Crossover teams no longer have Pool A/B tags until you apply pooling again.') }}
+                            @break
+                        @case('crossover-pitch-assignments-cleared')
+                            {{ trans_choice('{1} One scheduled crossover game was removed from its field.|[2,*] :count scheduled crossover games were removed from their fields.', (int) session('crossover_pitch_assignments_cleared_count', 0), ['count' => (int) session('crossover_pitch_assignments_cleared_count', 0)]) }}
+                            @break
+                        @case('quarter-final-generated')
+                            {{ __('Quarter Final schedule updated. :count game(s) generated from pooling.', ['count' => (int) session('quarter_final_matches_created', 0)]) }}
+                            @break
                         @case('crew-created')
                             {{ __('Crew member added successfully.') }}
                             @break
@@ -374,6 +396,7 @@
                             <a
                                 href="{{ route('admin.tournaments.index', ['tournament' => $selectedTournament->id, 'tab' => $tab['key']]) }}"
                                 wire:navigate
+                                @if ($selectedTab === $tab['key']) aria-current="page" @endif
                                 class="inline-flex shrink-0 items-center rounded-lg border px-4 py-2 text-sm font-medium transition {{ $selectedTab === $tab['key']
                                     ? 'border-[#2f55b7] bg-[#eef4ff] text-[#2f55b7] dark:border-sky-400 dark:bg-sky-950/30 dark:text-sky-200'
                                     : 'border-neutral-200 text-zinc-700 hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800' }}"
@@ -1034,20 +1057,17 @@
                     </section>
                 @elseif ($selectedTab === 'crossover')
                     @include('admin.tournaments.partials.crossover-workflow')
-                @elseif ($selectedTab === 'format')
-                    @include('admin.tournaments.partials.frisbee-format-workflow', [
-                        'tournament' => $selectedTournament,
+                @elseif ($selectedTab === 'pooling')
+                    @include('admin.tournaments.partials.pooling-workflow', [
+                        'selectedTournament' => $selectedTournament,
                     ])
-                @elseif ($selectedTab === 'matches')
-                    <section class="space-y-6">
-                        @include('admin.tournaments.partials.game-score-dashboard', [
-                            'selectedTournament' => $selectedTournament,
-                            'canEnterScores' => $canEnterScores,
-                            'canCreateMatches' => $canCreateMatches,
-                            'showAddMatchButton' => true,
-                            'showPublicLinks' => $selectedTournament->is_public,
-                        ])
-                    </section>
+                @elseif ($selectedTab === 'quarter-final')
+                    @include('admin.tournaments.partials.quarter-final-workflow', [
+                        'selectedTournament' => $selectedTournament,
+                        'crossoverMatches' => $crossoverMatches,
+                        'canEnterScores' => $canEnterScores,
+                        'canCreateMatches' => $canCreateMatches,
+                    ])
                 @elseif ($selectedTab === 'crew')
                     <section class="space-y-6">
                         <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
@@ -1144,6 +1164,7 @@
                     'tournament' => $selectedTournament,
                     'show' => $showPitchModal,
                     'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover'], true) ? $selectedTab : 'crossover',
+                    'pitchAssignmentScorekeepers' => $pitchAssignmentScorekeepers,
                 ])
 
                 @foreach ($selectedTournament->pitches as $pitch)
@@ -1151,6 +1172,7 @@
                         'tournament' => $selectedTournament,
                         'pitch' => $pitch,
                         'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover'], true) ? $selectedTab : 'crossover',
+                        'pitchAssignmentScorekeepers' => $pitchAssignmentScorekeepers,
                     ])
                 @endforeach
 
@@ -1164,6 +1186,7 @@
                     'tournament' => $selectedTournament,
                     'show' => $showMatchModal,
                     'stageOptions' => $frisbeeStageOptions,
+                    'suggestedNextMatchNumber' => \App\Models\TournamentMatch::nextMatchNumberForTournament((int) $selectedTournament->id),
                 ])
 
                 @include('admin.tournaments.partials.setup-add-crossover-match-modal', [
@@ -1205,7 +1228,7 @@
                         <div>
                             <flux:heading size="xl">{{ __('Tournament Scoring Console') }}</flux:heading>
                             <flux:text class="mt-2 max-w-3xl">
-                                {{ __('Open the match list below and enter final scores without full tournament setup access.') }}
+                                {{ __('You see games on fields assigned to you, and on fields that do not yet have an assigned scorekeeper. Use Manage Scoring to open the score sheet.') }}
                             </flux:text>
                             <div class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
                                 {{ $selectedTournament->name }}
@@ -1229,10 +1252,12 @@
 
                 @include('admin.tournaments.partials.game-score-dashboard', [
                     'selectedTournament' => $selectedTournament,
+                    'matches' => $scorekeeperPitchManagedMatches ?? collect(),
                     'canEnterScores' => $canEnterScores,
                     'canCreateMatches' => $canCreateMatches,
                     'showAddMatchButton' => false,
                     'showPublicLinks' => false,
+                    'manageScoringPitchScoped' => true,
                 ])
             @endif
         @else

@@ -17,6 +17,7 @@ class DatabaseSeeder extends Seeder
             ParticipantTeamsSeeder::class,
             TournamentFieldsAndRegistrationsSeeder::class,
             MatchPlayerStatsSeeder::class,
+            CrossoverMatchesSeeder::class,
         ]);
     }
 }

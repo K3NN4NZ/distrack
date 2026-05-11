@@ -1,6 +1,8 @@
 @php
+    use App\Models\TournamentMatch;
     use App\Support\BracketCodes;
 
+    $suggestedNextMatchNumber = TournamentMatch::nextMatchNumberForTournament((int) $tournament->id);
     $matchModalTournamentId = (int) old('match_tournament_id', 0);
     $isAddOpen = $matchModalTournamentId === (int) $tournament->id
         && old('match_form_intent') === 'crossover_add';
@@ -148,7 +150,7 @@
 
                 <div class="grid gap-4 md:grid-cols-3">
                     <flux:input name="round_label" :label="__('Round label')" :value="old('round_label', __('Crossover'))" type="text" />
-                    <flux:input name="match_number" :label="__('Match number')" :value="old('match_number')" type="number" min="1" />
+                    <flux:input name="match_number" :label="__('Match number')" :value="old('match_number', $suggestedNextMatchNumber)" type="number" min="1" />
                     <flux:input name="scheduled_at" :label="__('Scheduled at')" :value="old('scheduled_at')" type="datetime-local" />
                 </div>
 

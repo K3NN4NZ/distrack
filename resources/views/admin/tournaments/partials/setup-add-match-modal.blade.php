@@ -26,7 +26,7 @@
                 <input type="hidden" name="tournament_id" value="{{ $tournament->id }}">
                 <input type="hidden" name="match_tournament_id" value="{{ $tournament->id }}">
                 <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-                <input type="hidden" name="redirect_tab" value="matches">
+                <input type="hidden" name="redirect_tab" value="quarter-final">
 
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -92,7 +92,13 @@
                 </div>
 
                 <div class="grid gap-4 md:grid-cols-3">
-                    <flux:input name="match_number" :label="__('Match Number')" :value="old('match_number')" type="number" min="1" />
+                    <flux:input
+                        name="match_number"
+                        :label="__('Match Number')"
+                        :value="old('match_number', $suggestedNextMatchNumber ?? \App\Models\TournamentMatch::nextMatchNumberForTournament((int) $tournament->id))"
+                        type="number"
+                        min="1"
+                    />
                     <flux:input name="scheduled_at" :label="__('Scheduled At')" :value="old('scheduled_at')" type="datetime-local" />
 
                     <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">

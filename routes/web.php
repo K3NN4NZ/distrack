@@ -56,7 +56,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::get('/', 'index')->name('index');
             });
 
-            Route::middleware('can:enter-scores')->group(function () {
+            Route::middleware(['can:enter-scores', 'scorekeeper.owns-assigned-match-pitch'])->group(function () {
+                Route::get('/matches/{match}', 'redirectToMatchScoring')->name('matches.scoring.shortcut');
                 Route::get('/{tournament}/matches/{match}/scoring', 'showMatchScoring')->name('matches.scoring');
                 Route::patch('/{tournament}/matches/{match}/scoring', 'updateMatchScoring')->name('matches.scoring.update');
                 Route::post('/{tournament}/matches/{match}/scoring', 'storeMatchScoreLog')->name('matches.scoring.store');
@@ -77,8 +78,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/registrations', 'storeRegistration')->name('registrations.store');
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
                 Route::post('/matches/crossover/generate', 'generateCrossoverSchedule')->name('matches.crossover.generate');
+                Route::post('/{tournament}/matches/quarter-finals/generate', 'generateQuarterFinalMatches')->name('matches.quarter-finals.generate');
+                Route::get('/{tournament}/pooling-board', 'poolingBoard')->name('pooling-board');
+                Route::post('/{tournament}/pooling/auto', 'applyAutomaticPooling')->name('pooling.auto');
+                Route::post('/{tournament}/pooling/manual', 'saveManualPooling')->name('pooling.manual');
+                Route::post('/{tournament}/pooling/clear', 'clearPoolingAssignments')->name('pooling.clear');
+                Route::post('/{tournament}/matches/crossover/clear-pitch-assignments', 'clearCrossoverPitchAssignments')->name('matches.crossover.clear-pitch-assignments');
                 Route::post('/matches', 'storeMatch')->name('matches.store');
                 Route::put('/matches/{match}', 'updateMatch')->name('matches.update');
+                Route::post('/matches/{match}/crossover-unassign-pitch', 'unassignCrossoverMatchPitch')->name('matches.crossover-unassign-pitch');
                 Route::delete('/matches/{match}', 'destroyMatch')->name('matches.destroy');
                 Route::post('/crews', 'storeCrew')->name('crews.store');
             });

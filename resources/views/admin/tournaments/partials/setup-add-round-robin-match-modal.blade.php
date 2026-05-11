@@ -1,4 +1,7 @@
 @php
+    use App\Models\TournamentMatch;
+
+    $suggestedNextMatchNumber = TournamentMatch::nextMatchNumberForTournament((int) $tournament->id);
     $matchModalTournamentId = (int) old('match_tournament_id', 0);
     $pitchContext = isset($pitch) && $pitch ? 'pitch-'.$pitch->id : 'general';
     $isAddOpen = $matchModalTournamentId === (int) $tournament->id
@@ -264,7 +267,7 @@
                     @endif
 
                     <flux:input name="round_label" :label="__('Round Label')" :value="old('round_label')" type="text" placeholder="{{ __('e.g. Round 1 - Bracket A') }}" />
-                    <flux:input name="match_number" :label="__('Match Number')" :value="old('match_number')" type="number" min="1" />
+                    <flux:input name="match_number" :label="__('Match Number')" :value="old('match_number', $suggestedNextMatchNumber)" type="number" min="1" />
                 </div>
 
                 <flux:input name="scheduled_at" :label="__('Scheduled At')" :value="old('scheduled_at')" type="datetime-local" />

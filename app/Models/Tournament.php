@@ -15,7 +15,7 @@ class Tournament extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['created_by', 'name', 'slug', 'venue', 'description', 'registration_deadline', 'starts_at', 'ends_at', 'status', 'country_name', 'city', 'province', 'barangay', 'timezone', 'venue_google_map_link', 'thumbnail_path', 'event_type', 'division', 'surface', 'info_items', 'organizer_items', 'link_items', 'is_public'];
+    protected $fillable = ['created_by', 'name', 'slug', 'venue', 'description', 'registration_deadline', 'starts_at', 'ends_at', 'status', 'country_name', 'city', 'province', 'barangay', 'timezone', 'venue_google_map_link', 'thumbnail_path', 'event_type', 'division', 'pooling_rules', 'pooling_mode', 'pooling_manual_slots', 'surface', 'info_items', 'organizer_items', 'link_items', 'is_public'];
 
     /**
      * @return array<string, string>
@@ -29,6 +29,8 @@ class Tournament extends Model
             'info_items' => 'array',
             'organizer_items' => 'array',
             'link_items' => 'array',
+            'pooling_rules' => 'array',
+            'pooling_manual_slots' => 'array',
             'is_public' => 'boolean',
         ];
     }

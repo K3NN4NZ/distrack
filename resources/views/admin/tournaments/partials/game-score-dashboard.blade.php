@@ -9,6 +9,11 @@
     $dashboardPageSize = $pageSize ?? 6;
     $showAddMatchButton = $showAddMatchButton ?? false;
     $showPublicLinks = $showPublicLinks ?? false;
+    $manageScoringPitchScoped = $manageScoringPitchScoped ?? false;
+    $dashboardTitle = $dashboardTitle ?? __('Games Dashboard');
+    $dashboardIntro = $dashboardIntro ?? null;
+    $dashboardEmptyMessage = $dashboardEmptyMessage ?? null;
+    $tournamentMatchTotal = collect($selectedTournament->matches ?? [])->count();
     $totalGames = $dashboardMatches->count();
     $scheduledGames = $dashboardMatches->where('status', 'scheduled')->count();
     $liveGames = $dashboardMatches->where('status', 'live')->count();
@@ -62,15 +67,23 @@
 >
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Games Dashboard') }}</h2>
-            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                {{ __('Use this view to find a game, check its status, and open the score sheet.') }}
-            </p>
+            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ $dashboardTitle }}</h2>
+            @if (filled($dashboardIntro))
+                <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                    {{ $dashboardIntro }}
+                </p>
+            @else
+                <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                    {{ $manageScoringPitchScoped
+                        ? __('Games on your assigned fields and on fields without an assigned scorekeeper appear here. Open Manage Scoring to enter or update the score sheet.')
+                        : __('Use this view to find a game, check its status, and open the score sheet.') }}
+                </p>
+            @endif
         </div>
 
         @if ($showAddMatchButton)
             <flux:modal.trigger name="setup-add-match-modal-{{ $selectedTournament->id }}">
-                <flux:button variant="primary" :disabled="! $canCreateMatches">
+                <flux:button variant="primary" :disabled="(!$canCreateMatches)">
                     {{ __('Add Match') }}
                 </flux:button>
             </flux:modal.trigger>
@@ -170,7 +183,7 @@
                             wire:navigate
                             class="inline-flex items-center justify-center rounded-lg border border-[#c8d7f8] bg-[#e9f0ff] px-3 py-2 text-sm font-medium text-[#2f55b7] transition hover:border-[#9fb7f2] hover:bg-[#dce8ff]"
                         >
-                            {{ __('Open Score Sheet') }}
+                            {{ $manageScoringPitchScoped ? __('Manage Scoring') : __('Open Score Sheet') }}
                         </a>
                     @elseif (! $match->homeRegistration || ! $match->awayRegistration)
                         <span class="inline-flex items-center justify-center rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300">
@@ -196,7 +209,18 @@
             </article>
         @empty
             <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                {{ __('No games have been added yet.') }}
+                @if (filled($dashboardEmptyMessage))
+                    {{ $dashboardEmptyMessage }}
+                @elseif ($manageScoringPitchScoped && $tournamentMatchTotal > 0)
+                    <p class="font-medium text-zinc-900 dark:text-zinc-100">
+                        {{ __('No games are available for you to score in this tournament.') }}
+                    </p>
+                    <p class="mt-2">
+                        {{ __('Games must be placed on a playing field. You can score games on fields assigned to you, or on fields with no assigned scorekeeper. Games on fields reserved for another scorekeeper are hidden.') }}
+                    </p>
+                @else
+                    {{ __('No games have been added yet.') }}
+                @endif
             </div>
         @endforelse
     </div>

@@ -129,4 +129,12 @@ class User extends Authenticatable
     {
         return $this->hasMany(Tournament::class, 'created_by');
     }
+
+    /**
+     * Playing fields this scorekeeper is assigned to manage.
+     */
+    public function assignedScorekeeperPitches(): HasMany
+    {
+        return $this->hasMany(Pitch::class, 'scorekeeper_user_id');
+    }
 }
