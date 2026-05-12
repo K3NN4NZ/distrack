@@ -42,6 +42,10 @@
                         {{ trans_choice('{1} :count team|[2,*] :count teams', $teams->count(), ['count' => $teams->count()]) }}
                     </div>
 
+                    <div class="rounded-lg border border-neutral-200 px-4 py-2 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
+                        {{ trans_choice('{1} :count total roster|[2,*] :count total roster', $totalRosterCount, ['count' => $totalRosterCount]) }}
+                    </div>
+
                     <flux:modal.trigger name="create-team-modal">
                         <flux:button variant="primary">
                             {{ __('+ Add Team') }}

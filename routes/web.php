@@ -59,7 +59,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::middleware(['can:enter-scores', 'scorekeeper.owns-assigned-match-pitch'])->group(function () {
                 Route::get('/matches/{match}', 'redirectToMatchScoring')->name('matches.scoring.shortcut');
                 Route::get('/{tournament}/matches/{match}/scoring', 'showMatchScoring')->name('matches.scoring');
-                Route::patch('/{tournament}/matches/{match}/scoring', 'updateMatchScoring')->name('matches.scoring.update');
                 Route::post('/{tournament}/matches/{match}/scoring', 'storeMatchScoreLog')->name('matches.scoring.store');
                 Route::delete('/{tournament}/matches/{match}/scoring/{scoreLog}', 'destroyMatchScoreLog')->name('matches.scoring.destroy');
                 Route::patch('/{tournament}/matches/{match}/scoring/player-stats', 'updateMatchPlayerStat')->name('matches.scoring.player-stats.update');
@@ -77,6 +76,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/{tournament}/bracket-ranking/apply', 'applyBracketRanking')->name('bracket-ranking.apply');
                 Route::post('/registrations', 'storeRegistration')->name('registrations.store');
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
+                Route::post('/{tournament}/matches/small-day1-schedule/sync', 'syncSmallDayOneRoundRobinSchedule')->name('matches.small-day1-schedule.sync');
+                Route::patch('/{tournament}/matches/small-day1-slot-status', 'updateSmallDayOneRoundRobinSlotStatus')->name('matches.small-day1-slot-status.update');
+                Route::patch('/{tournament}/matches/{match}/status', 'updateRoundRobinMatchStatus')->name('matches.status.update');
                 Route::post('/matches/crossover/generate', 'generateCrossoverSchedule')->name('matches.crossover.generate');
                 Route::post('/{tournament}/matches/quarter-finals/generate', 'generateQuarterFinalMatches')->name('matches.quarter-finals.generate');
                 Route::get('/{tournament}/pooling-board', 'poolingBoard')->name('pooling-board');

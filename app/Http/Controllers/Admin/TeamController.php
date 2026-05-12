@@ -34,12 +34,15 @@ class TeamController extends Controller
             ->latest()
             ->get();
 
+        $totalRosterCount = TeamMember::query()->count();
+
         $selectedTeam = $teams->firstWhere('id', $request->integer('selected_team'))
             ?? $teams->first();
 
         return view('admin.teams.index', [
             'teams' => $teams,
             'selectedTeam' => $selectedTeam,
+            'totalRosterCount' => $totalRosterCount,
         ]);
     }
 

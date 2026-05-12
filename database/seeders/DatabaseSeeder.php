@@ -14,10 +14,16 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             UserAccountSeeder::class,
-            ParticipantTeamsSeeder::class,
-            TournamentFieldsAndRegistrationsSeeder::class,
-            MatchPlayerStatsSeeder::class,
-            CrossoverMatchesSeeder::class,
+            CpuTeamSeeder::class,
+            SigbinTeamSeeder::class,
+            UtiTeamSeeder::class,
+            YooyTeamSeeder::class,
+            ToothlessUltiTeamSeeder::class,
+            EmpoxUltiTeamSeeder::class,
+            AtsuTeamSeeder::class,
+            BombanaTeamSeeder::class,
+            RingerTeamSeeder::class,
+            TournamentOneRegistrationSeedingSeeder::class,
         ]);
     }
 }

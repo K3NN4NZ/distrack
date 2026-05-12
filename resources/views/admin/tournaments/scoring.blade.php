@@ -17,6 +17,20 @@
         default => 'bg-zinc-100 text-zinc-700',
     };
     $scoreInputVisible = $match->status === 'completed';
+    $isSmallDayOneTrackedRow = \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match);
+    $scheduleStatusLabel = match ($match->status) {
+        'scheduled' => __('Upcoming'),
+        'live' => __('Live'),
+        'completed' => __('Completed'),
+        default => (string) str($match->status)->headline(),
+    };
+    $scoringWaitMessage = match (true) {
+        $isSmallDayOneTrackedRow && $match->status === 'scheduled' => __('This Round Robin time slot is upcoming. Scoring will be available after the row is marked Completed.'),
+        $isSmallDayOneTrackedRow && $match->status === 'live' => __('This Round Robin time slot is live. Scoring will be available after the row is marked Completed.'),
+        $match->status === 'scheduled' => __('This match has not started yet. Scoring will be available once the match is completed.'),
+        $match->status === 'live' => __('This match is currently live. Scoring will be available after the match is completed.'),
+        default => __('Score input is available only after the schedule marks this game as Completed.'),
+    };
     $homeStats = $match->playerStats
         ->filter(fn ($stat) => $stat->teamMember?->team_id === $homeTeam?->id)
         ->values();
@@ -30,6 +44,7 @@
     $setupBackTab = match ($match->stage) {
         'crossover' => 'crossover',
         'pool', 'pool_play', 'pooling' => 'pooling',
+        'round_robin' => 'round-robin',
         default => 'quarter-final',
     };
 @endphp
@@ -52,7 +67,9 @@
 
                     <h1 class="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-white">{{ __('Game Score') }}</h1>
                     <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                        {{ __('Open the scheduled game after play, enter the final score manually, and mark it completed.') }}
+                        {{ $isSmallDayOneTrackedRow
+                            ? __('Round Robin row status is set on the schedule (one status per time slot for Pitch 1 and Pitch 2). Player scores can be entered after that row is marked Completed.')
+                            : __('Match status is controlled from the tournament schedule. Player scores can be entered once the game is marked Completed.') }}
                     </p>
                     <div class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
                         {{ $tournament->name }}
@@ -87,9 +104,6 @@
                             @break
                         @case('score-play-deleted')
                             {{ __('Scoring play removed and totals rebuilt successfully.') }}
-                            @break
-                        @case('match-scoring-updated')
-                            {{ __('Match control settings updated successfully.') }}
                             @break
                         @default
                             {{ __('Saved.') }}
@@ -128,7 +142,7 @@
 
                     <div class="mt-4">
                         <span class="inline-flex rounded-[0.7rem] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] {{ $statusTone }}">
-                            {{ str($match->status)->headline() }}
+                            {{ $scheduleStatusLabel }}
                         </span>
                     </div>
 
@@ -166,59 +180,17 @@
                 {{ __('Both home and away registrations must be attached to this game before scores can be entered.') }}
             </section>
         @else
-            @if ($matchHasManualScorelineWithoutLog)
+            @if ($scoreInputVisible && $matchHasManualScorelineWithoutLog)
                 <section class="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
                     {{ __('This match currently has a manual scoreline without a scoring timeline. The first live-scoring play will replace that manual score with the new automatic log-based total.') }}
                 </section>
             @endif
 
-            <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                <div class="mb-4">
-                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Match Control') }}</h2>
-                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                        {{ __('Status and notes save automatically. Score inputs are available only when the match is completed.') }}
-                    </p>
-                </div>
-
-                <form
-                    method="POST"
-                    action="{{ route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]) }}"
-                    class="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-end"
-                    x-data
-                >
-                    @csrf
-                    @method('PATCH')
-
-                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        {{ __('Status') }}
-                        <select
-                            name="status"
-                            x-on:change="$root.submit()"
-                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                        >
-                            @foreach (['scheduled' => 'Scheduled', 'live' => 'Live', 'completed' => 'Completed'] as $value => $label)
-                                <option value="{{ $value }}" @selected(old('status', $match->status) === $value)>{{ __($label) }}</option>
-                            @endforeach
-                        </select>
-                        @error('status')
-                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                        @enderror
-                    </label>
-
-                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        {{ __('Notes') }}
-                        <input
-                            name="notes"
-                            value="{{ old('notes', $match->notes) }}"
-                            x-on:change="$root.submit()"
-                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                        >
-                        @error('notes')
-                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                        @enderror
-                    </label>
-                </form>
-            </section>
+            @if ($errors->has('score_log'))
+                <section class="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">
+                    {{ $errors->first('score_log') }}
+                </section>
+            @endif
 
             <section class="rounded-xl border border-neutral-200 bg-white px-6 py-5 text-center dark:border-neutral-700 dark:bg-zinc-900">
                 <div class="flex flex-col items-center justify-center gap-2 text-xl font-semibold text-zinc-900 sm:flex-row dark:text-white">
@@ -422,7 +394,7 @@
             </div>
             @else
                 <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-center text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
-                    {{ __('Score input is hidden while this match is :status. Change Match Control to Completed before entering player scores.', ['status' => str($match->status)->headline()]) }}
+                    {{ $scoringWaitMessage }}
                 </section>
             @endif
 
@@ -472,20 +444,22 @@
                                         </div>
                                     </div>
 
-                                    <form
-                                        method="POST"
-                                        action="{{ route('admin.tournaments.matches.scoring.destroy', ['tournament' => $tournament, 'match' => $match, 'scoreLog' => $scoreLog]) }}"
-                                        onsubmit="return confirm('Remove this scoring play and rebuild the scoreline?')"
-                                    >
-                                        @csrf
-                                        @method('DELETE')
-                                        <button
-                                            type="submit"
-                                            class="inline-flex items-center justify-center rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+                                    @if ($scoreInputVisible)
+                                        <form
+                                            method="POST"
+                                            action="{{ route('admin.tournaments.matches.scoring.destroy', ['tournament' => $tournament, 'match' => $match, 'scoreLog' => $scoreLog]) }}"
+                                            onsubmit="return confirm('Remove this scoring play and rebuild the scoreline?')"
                                         >
-                                            {{ __('Delete') }}
-                                        </button>
-                                    </form>
+                                            @csrf
+                                            @method('DELETE')
+                                            <button
+                                                type="submit"
+                                                class="inline-flex items-center justify-center rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+                                            >
+                                                {{ __('Delete') }}
+                                            </button>
+                                        </form>
+                                    @endif
                                 </div>
                             </div>
                         @empty

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -24,6 +25,25 @@ class TournamentRegistration extends Model
         return [
             'seed_number' => 'integer',
         ];
+    }
+
+    /**
+     * Letter seed derived from {@see $seed_number}: 1 → A, 2 → B, … up to 26 → Z.
+     */
+    public static function seedNumberToLetter(?int $seedNumber): ?string
+    {
+        if ($seedNumber === null || $seedNumber < 1 || $seedNumber > 26) {
+            return null;
+        }
+
+        return chr(64 + $seedNumber);
+    }
+
+    protected function seedLetter(): Attribute
+    {
+        return Attribute::make(
+            get: fn (): ?string => self::seedNumberToLetter($this->seed_number),
+        );
     }
 
     /**

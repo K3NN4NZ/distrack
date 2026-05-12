@@ -43,6 +43,18 @@
         </div>
     </div>
 
+    @if (($tournamentSeedOrderRegistrations ?? collect())->isNotEmpty())
+        <div class="mt-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
+            <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Tournament seed order') }}</div>
+            <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Teams are ordered by stored seed numbers (1 = seed A, 2 = B, …).') }}</p>
+            <ul class="mt-3 list-none space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
+                @foreach ($tournamentSeedOrderRegistrations as $registration)
+                    <li>{{ ($registration->seed_letter ?? '—') }} — {{ $registration->team->name }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
     <div class="mt-4 rounded-xl border border-dashed border-neutral-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-300">
         {{ __('Every click shuffles the teams and bracket placements again. If there are fewer than :minimum teams, no bracket is created. Once bracket play starts, teams are grouped :count per bracket and any leftovers stay unassigned.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]) }}
     </div>
@@ -99,7 +111,7 @@
                         @if (collect($group['registrations'])->isNotEmpty())
                             <div class="mt-3 space-y-1 border-t border-neutral-200 pt-3 text-sm text-zinc-700 dark:border-neutral-700 dark:text-zinc-300">
                                 @foreach ($group['registrations'] as $registration)
-                                    <div>{{ ($registration->seed_number ?? '-') . ' - ' . $registration->team->name }}</div>
+                                    <div>{{ ($registration->seed_letter ?? '—') }} — {{ $registration->team->name }}</div>
                                 @endforeach
                             </div>
                         @endif
@@ -160,12 +172,15 @@
                                     <div>
                                         <div class="font-semibold text-zinc-900 dark:text-white">{{ $registration->team->name }}</div>
                                         <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                            {{ __('Current bracket: :bracket', ['bracket' => $registration->bracket_code]) }}
+                                            {{ __('Letter seed: :letter', ['letter' => $registration->seed_letter ?? '—']) }}
+                                        </div>
+                                        <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                            {{ __('Current bracket: :bracket', ['bracket' => $registration->bracket_code ?? '—']) }}
                                         </div>
                                     </div>
 
                                     <label class="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                        {{ __('Seed') }}
+                                        {{ __('Seed (#)') }}
                                         <input
                                             type="number"
                                             min="1"

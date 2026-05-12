@@ -15,6 +15,7 @@ use App\Models\TournamentRegistration;
 use App\Models\User;
 use App\Services\BracketRankingService;
 use App\Support\BracketCodes;
+use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\TournamentPooling;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -27,6 +28,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
+use InvalidArgumentException;
 
 class TournamentController extends Controller
 {
@@ -95,6 +97,36 @@ class TournamentController extends Controller
                 ->orderBy('sort_order')
                 ->orderBy('name'),
         ]);
+
+        if ($selectedTournament !== null) {
+            $registrationCount = $selectedTournament->registrations->count();
+            $normalizedTabForThreshold = $this->normalizeTournamentTab($request->string('tab')->toString());
+
+            if (
+                $registrationCount < self::MINIMUM_BRACKET_TEAM_COUNT
+                && $normalizedTabForThreshold !== null
+                && in_array($normalizedTabForThreshold, ['bracket-ranking', 'crossover', 'pooling'], true)
+            ) {
+                return redirect()->route(
+                    'admin.tournaments.index',
+                    collect($request->query())
+                        ->put('tab', 'overview')
+                        ->all(),
+                );
+            }
+
+            if (
+                $registrationCount >= self::MINIMUM_BRACKET_TEAM_COUNT
+                && $normalizedTabForThreshold === 'team-standing'
+            ) {
+                return redirect()->route(
+                    'admin.tournaments.index',
+                    collect($request->query())
+                        ->put('tab', 'overview')
+                        ->all(),
+                );
+            }
+        }
 
         $availableTeams = Team::query()
             ->withCount('members')
@@ -242,67 +274,6 @@ class TournamentController extends Controller
     }
 
     /**
-     * Update manual match status, scoreline, and operator notes.
-     */
-    public function updateMatchScoring(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
-    {
-        $this->ensureTournamentOwnsMatch($tournament, $match);
-
-        $validator = Validator::make($request->all(), [
-            'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
-            'home_score' => ['nullable', 'integer', 'min:0', 'max:999'],
-            'away_score' => ['nullable', 'integer', 'min:0', 'max:999'],
-            'notes' => ['nullable', 'string'],
-        ]);
-
-        $validator->after(function ($validator) use ($request, $match): void {
-            $hasScoreLogs = $match->scoreLogs()->exists();
-            $status = $request->string('status')->toString();
-            $hasHomeScore = $request->filled('home_score');
-            $hasAwayScore = $request->filled('away_score');
-
-            if ($hasHomeScore xor $hasAwayScore) {
-                $validator->errors()->add('home_score', 'Both scores are required when recording a result.');
-                $validator->errors()->add('away_score', 'Both scores are required when recording a result.');
-            }
-
-            if ($status === 'scheduled' && $hasScoreLogs) {
-                $validator->errors()->add('status', 'Clear the scoring timeline before moving the match back to scheduled.');
-            }
-
-        });
-
-        $validated = $validator->validate();
-        $scoresVisible = $validated['status'] === 'completed'
-            && array_key_exists('home_score', $validated)
-            && array_key_exists('away_score', $validated)
-            && $validated['home_score'] !== null
-            && $validated['away_score'] !== null;
-        $matchUpdates = [
-            'status' => $validated['status'],
-            'notes' => $this->normalizeNullableString($validated['notes'] ?? null),
-        ];
-
-        if ($scoresVisible) {
-            $matchUpdates['home_score'] = $validated['home_score'];
-            $matchUpdates['away_score'] = $validated['away_score'];
-        }
-
-        $match->update($matchUpdates);
-
-        if ($match->stage === 'crossover') {
-            $this->syncCrossoverPoolingAssignments($tournament->id);
-        }
-
-        return redirect()
-            ->route('admin.tournaments.matches.scoring', [
-                'tournament' => $tournament,
-                'match' => $match,
-            ])
-            ->with('status', 'match-scoring-updated');
-    }
-
-    /**
      * Record a scoring play and auto-sync the visible scoreline plus player totals.
      */
     public function storeMatchScoreLog(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
@@ -327,6 +298,15 @@ class TournamentController extends Controller
         ]);
 
         $validator->after(function ($validator) use ($request, $match, $registrationOptions): void {
+            if ($match->status !== 'completed') {
+                $validator->errors()->add(
+                    'team_registration_id',
+                    SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+                );
+
+                return;
+            }
+
             if ($registrationOptions->count() < 2) {
                 $validator->errors()->add('team_registration_id', 'This match needs both registered teams before live scoring can start.');
 
@@ -374,14 +354,6 @@ class TournamentController extends Controller
                 'away_score' => 0,
             ]);
 
-            if ($match->status === 'scheduled') {
-                TournamentMatch::query()
-                    ->whereKey($match->id)
-                    ->update(['status' => 'live']);
-
-                $match->status = 'live';
-            }
-
             $this->syncMatchScoreTimeline($match);
             $this->syncMatchPlayerStatsFromScoreLogs($match);
         });
@@ -405,6 +377,17 @@ class TournamentController extends Controller
     ): RedirectResponse {
         $this->ensureTournamentOwnsMatch($tournament, $match);
         abort_unless($scoreLog->match_id === $match->id, 404);
+
+        if ($match->status !== 'completed') {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withErrors([
+                    'score_log' => SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+                ]);
+        }
 
         DB::transaction(function () use ($match, $scoreLog): void {
             $scoreLog->delete();
@@ -430,7 +413,7 @@ class TournamentController extends Controller
         abort_unless(
             $match->status === 'completed',
             422,
-            'Scores can only be entered after the match is completed.',
+            SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
         );
 
         $validated = $request->validate([
@@ -1896,6 +1879,189 @@ class TournamentController extends Controller
     }
 
     /**
+     * Persist the fixed Day 1 round robin grid (Pitch 1 & Pitch 2) for tournaments below the bracket threshold.
+     */
+    public function syncSmallDayOneRoundRobinSchedule(Request $request, Tournament $tournament): RedirectResponse
+    {
+        try {
+            SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day1_schedule' => $exception->getMessage()]);
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day1-schedule-synced');
+    }
+
+    /**
+     * Quick status changes from the small-tournament fixed Day 1 round robin table.
+     */
+    public function updateRoundRobinMatchStatus(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        abort_unless($match->stage === 'round_robin', 404);
+
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournament),
+                )
+                ->withErrors(['status' => __('This quick status control is only available for tournaments below the bracket threshold.')]);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $match): void {
+            $status = $request->string('status')->toString();
+
+            if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
+                $validator->errors()->add('status', __('Clear the scoring timeline before moving the match back to scheduled.'));
+            }
+
+            if ($status === 'completed' && ($match->home_score === null || $match->away_score === null)) {
+                $validator->errors()->add('status', __('Completed matches must include both home and away scores.'));
+            }
+        });
+
+        $validated = $validator->validate();
+
+        $match->update([
+            'status' => $validated['status'],
+        ]);
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournament),
+            )
+            ->with('status', 'match-status-updated');
+    }
+
+    /**
+     * Apply one status to both Pitch 1 & Pitch 2 games for a fixed Day 1 time-slot row (same round).
+     */
+    public function updateSmallDayOneRoundRobinSlotStatus(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['status' => __('This row status control is only available for tournaments below the bracket threshold.')]);
+        }
+
+        $request->merge([
+            'status' => $this->normalizeSmallDayOneSlotStatusInput($request->string('status')->toString()),
+        ]);
+
+        $markerPrefix = SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX;
+
+        $validator = Validator::make($request->all(), [
+            'round' => ['required', 'integer', 'min:1', 'max:12'],
+            'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $tournament, $markerPrefix): void {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            $round = (int) $request->input('round');
+            $status = $request->string('status')->toString();
+            $gameNumbers = [($round * 2) - 1, $round * 2];
+
+            $matches = TournamentMatch::query()
+                ->where('tournament_id', $tournament->id)
+                ->where('stage', 'round_robin')
+                ->whereIn('match_number', $gameNumbers)
+                ->where('notes', 'like', '%'.$markerPrefix.'%')
+                ->orderBy('match_number')
+                ->get();
+
+            if ($matches->isEmpty()) {
+                $validator->errors()->add('status', __('Sync the Day 1 schedule before setting row status.'));
+
+                return;
+            }
+
+            foreach ($matches as $match) {
+                if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
+                    $validator->errors()->add(
+                        'status',
+                        __('Clear the scoring timeline on game :num before moving this row back to upcoming.', ['num' => $match->match_number]),
+                    );
+
+                    return;
+                }
+            }
+        });
+
+        if ($validator->fails()) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($validator);
+        }
+
+        $validated = $validator->validated();
+
+        $round = (int) $validated['round'];
+        $status = $validated['status'];
+        $gameNumbers = [($round * 2) - 1, $round * 2];
+
+        $matches = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('stage', 'round_robin')
+            ->whereIn('match_number', $gameNumbers)
+            ->where('notes', 'like', '%'.$markerPrefix.'%')
+            ->orderBy('match_number')
+            ->get();
+
+        DB::transaction(function () use ($matches, $status): void {
+            foreach ($matches as $match) {
+                $match->update(['status' => $status]);
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'match-status-updated');
+    }
+
+    /**
+     * Query string for admin tournament setup opened on the Round Robin tab (fixed Day 1 flows).
+     *
+     * @return array<string, mixed>
+     */
+    protected function adminRoundRobinTabQuery(Request $request, Tournament $tournament): array
+    {
+        return collect([
+            'tournament' => $tournament->id,
+            'tab' => 'round-robin',
+            'search' => $this->normalizeNullableString($request->string('redirect_search')->toString()),
+        ])->filter(fn (mixed $value): bool => $value !== null && $value !== '')->all();
+    }
+
+    /**
+     * Map UI labels (Upcoming / Live / Completed) to persisted match status values.
+     */
+    protected function normalizeSmallDayOneSlotStatusInput(string $status): string
+    {
+        $trimmed = trim($status);
+
+        return match (strtolower($trimmed)) {
+            'upcoming' => 'scheduled',
+            'live' => 'live',
+            'completed' => 'completed',
+            default => $trimmed,
+        };
+    }
+
+    /**
      * Add a public crew entry to a selected tournament.
      */
     public function storeCrew(Request $request): RedirectResponse
@@ -2510,6 +2676,7 @@ class TournamentController extends Controller
         return [
             'selectedTournament' => $tournament,
             'teamCount' => $teamCount,
+            'tournamentSeedOrderRegistrations' => $seededRegistrations,
             'seededBracketGroups' => $seededBracketGroups,
             'unassignedSeededCount' => $seededRegistrations
                 ->filter(fn ($registration): bool => blank($registration->bracket_code))
@@ -2544,7 +2711,15 @@ class TournamentController extends Controller
                 return [
                     'code' => $code,
                     'count' => $registrations->count(),
-                    'registrations' => $registrations->values(),
+                    'registrations' => $registrations
+                        ->sort(fn ($left, $right) => [
+                            $left->seed_number ?? PHP_INT_MAX,
+                            $left->id,
+                        ] <=> [
+                            $right->seed_number ?? PHP_INT_MAX,
+                            $right->id,
+                        ])
+                        ->values(),
                     'seed_range' => $seedNumbers->isEmpty()
                         ? null
                         : ($firstSeed === $lastSeed ? (string) $firstSeed : "{$firstSeed}-{$lastSeed}"),
@@ -2947,7 +3122,7 @@ class TournamentController extends Controller
             return 'quarter-final';
         }
 
-        return in_array($tab, ['overview', 'round-robin', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'crew', 'publish'], true)
+        return in_array($tab, ['overview', 'round-robin', 'team-standing', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'crew', 'publish'], true)
             ? $tab
             : null;
     }

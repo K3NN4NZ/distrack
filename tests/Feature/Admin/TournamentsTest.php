@@ -11,10 +11,39 @@ use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
 use App\Models\User;
+use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+
+/**
+ * Ensures enough registrations exist for Bracket Ranking / Crossover / Pooling tabs to appear (threshold matches {@see AdminTournamentController::MINIMUM_BRACKET_TEAM_COUNT}).
+ */
+function distrackPadRegistrationsForBracketWorkflowTabs(Tournament $tournament, User $owner, int $currentRegistrationCount): void
+{
+    $minimum = AdminTournamentController::MINIMUM_BRACKET_TEAM_COUNT;
+    $needed = max(0, $minimum - $currentRegistrationCount);
+
+    foreach (range(1, $needed) as $index) {
+        $team = Team::query()->create([
+            'owner_user_id' => $owner->id,
+            'name' => 'Bracket Tab Pad '.$tournament->id.'-'.$index,
+            'address' => 'Padding',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => null,
+            'bracket_code' => null,
+            'bracket_rank' => null,
+            'pool_name' => null,
+        ]);
+    }
+}
 
 test('non admin users cannot visit tournament setup', function () {
     $user = User::factory()->create();
@@ -123,9 +152,10 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertSee('Tournament Setup Workspace')
         ->assertSee('Seeding')
         ->assertSee('Round Robin')
-        ->assertSee('Bracket Ranking')
-        ->assertSee('Crossover')
-        ->assertSee('Pooling')
+        ->assertDontSee('tab=bracket-ranking', false)
+        ->assertDontSee('tab=crossover', false)
+        ->assertDontSee('tab=pooling', false)
+        ->assertSee('tab=team-standing', false)
         ->assertSee('Quarter Final')
         ->assertSee('Semi Finals')
         ->assertSee('Championship')
@@ -135,6 +165,111 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertDontSee('Quick Actions')
         ->assertDontSee('Readiness Checklist')
         ->assertDontSee('Tournament Summary');
+});
+
+test('team standing tab shows seeded rows for tournaments below bracket workflow threshold', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Standing Tab Cup',
+        'slug' => 'standing-tab-cup',
+        'venue' => 'North Oval',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $alpha = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Alpha Line',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $beta = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Beta Line',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $beta->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $alpha->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Team Standing')
+        ->assertSeeInOrder(['Alpha Line', 'Beta Line']);
+});
+
+test('team standing tab redirects to seeding when bracket workflow threshold is met', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'No Standing Tab Cup',
+        'slug' => 'no-standing-tab-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 0);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']));
+});
+
+test('admin setup reveals bracket workflow tabs after registration count reaches threshold', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Bracket Tabs Threshold Cup',
+        'slug' => 'bracket-tabs-threshold-cup',
+        'venue' => 'Downtown Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'province' => 'Bukidnon',
+        'city' => 'Valencia City',
+        'barangay' => 'Poblacion',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => false,
+    ]);
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 0);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertOk()
+        ->assertSee('tab=bracket-ranking', false)
+        ->assertSee('tab=crossover', false)
+        ->assertSee('tab=pooling', false)
+        ->assertDontSee('tab=team-standing', false);
 });
 
 test('round robin tab no longer shows the tournament profile form', function () {
@@ -300,10 +435,10 @@ test('overview shows seeded team names inside current bracket cards', function (
         ->assertOk()
         ->assertSee('Current Brackets')
         ->assertSee('Randomize current brackets')
-        ->assertSee('1 - Bracket Summary Team 1')
-        ->assertSee('5 - Bracket Summary Team 5')
-        ->assertSee('6 - Bracket Summary Team 6')
-        ->assertSee('10 - Bracket Summary Team 10');
+        ->assertSee('A — Bracket Summary Team 1')
+        ->assertSee('E — Bracket Summary Team 5')
+        ->assertSee('F — Bracket Summary Team 6')
+        ->assertSee('J — Bracket Summary Team 10');
 });
 
 test('admin users can auto seed 8 teams without creating brackets', function () {
@@ -1143,6 +1278,13 @@ test('admin pooling tab loads under tab=pooling and legacy format links redirect
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']));
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']));
+
+    $teamOwner = User::factory()->create();
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $teamOwner, 0);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
         ->assertOk()
         ->assertSee('Pooling')
         ->assertSee('No crossover matches found yet')
@@ -1283,7 +1425,7 @@ test('scorekeepers can access scoring routes without full admin setup tools', fu
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
         ->assertSee('Game Score')
-        ->assertSee('Match Control');
+        ->assertDontSee('Match Control');
 
     $this->get(route('admin.tournaments.matches.scoring.shortcut', ['match' => $match]))
         ->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
@@ -1638,11 +1780,13 @@ test('admin users cannot enter match scores', function () {
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertForbidden();
 
-    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+    $scoringUrl = route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]);
+
+    $this->patch($scoringUrl, [
         'status' => 'completed',
         'home_score' => 11,
         'away_score' => 9,
-    ])->assertForbidden();
+    ])->assertStatus(405);
 
     expect($match->fresh()->status)->toBe('scheduled');
     expect($match->fresh()->home_score)->toBeNull();
@@ -2392,7 +2536,7 @@ test('admin users can create tournament resources', function () {
     Storage::disk('public')->assertExists($crewMember->photo_path);
 });
 
-test('scorekeepers can record live scoring plays and rebuild match totals', function () {
+test('scorekeepers can record scoring plays after the match is completed and rebuild match totals', function () {
     $admin = User::factory()->admin()->create();
     $scorekeeper = User::factory()->scorekeeper()->create();
     $teamOwner = User::factory()->create();
@@ -2480,10 +2624,23 @@ test('scorekeepers can record live scoring plays and rebuild match totals', func
 
     $this->actingAs($scorekeeper);
 
+    $this->post(route('admin.tournaments.matches.scoring.store', ['tournament' => $tournament, 'match' => $match]), [
+        'team_registration_id' => $homeRegistration->id,
+        'team_member_id' => $homeScorer->id,
+        'assist_team_member_id' => $homeAssister->id,
+        'minute' => 5,
+    ])->assertSessionHasErrors('team_registration_id');
+
+    $match->update([
+        'status' => 'completed',
+        'home_score' => 0,
+        'away_score' => 0,
+    ]);
+
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
         ->assertSee('Game Score')
-        ->assertSee('Match Control')
+        ->assertDontSee('Match Control')
         ->assertSee('Manila Storm')
         ->assertSee('Cebu Breakers');
 
@@ -2492,11 +2649,12 @@ test('scorekeepers can record live scoring plays and rebuild match totals', func
         'team_member_id' => $homeScorer->id,
         'assist_team_member_id' => $homeAssister->id,
         'minute' => 5,
+        'replace_manual_scoreline' => true,
     ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
 
     $match->refresh();
 
-    expect($match->status)->toBe('live');
+    expect($match->status)->toBe('completed');
     expect($match->home_score)->toBe(1);
     expect($match->away_score)->toBe(0);
 
@@ -2544,16 +2702,6 @@ test('scorekeepers can record live scoring plays and rebuild match totals', func
     expect($secondLog)->not->toBeNull();
     expect($secondLog->home_score)->toBe(1);
     expect($secondLog->away_score)->toBe(1);
-
-    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
-        'status' => 'completed',
-        'notes' => 'Universe point settled the pool race.',
-    ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
-
-    $match->refresh();
-
-    expect($match->status)->toBe('completed');
-    expect($match->notes)->toBe('Universe point settled the pool race.');
 
     $this->delete(route('admin.tournaments.matches.scoring.destroy', [
         'tournament' => $tournament,
@@ -2640,19 +2788,18 @@ test('scorekeepers can enter a completed game score manually from the scoring pa
 
     $match->update(['pitch_id' => $pitch->id]);
 
-    $this->actingAs($scorekeeper);
-
-    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
-        ->assertOk()
-        ->assertSee('Match Control')
-        ->assertDontSee('Add Scoring Play');
-
-    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+    $match->update([
         'status' => 'completed',
         'home_score' => 11,
         'away_score' => 8,
         'notes' => 'Entered after the scheduled game finished.',
-    ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+    ]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertDontSee('Match Control');
 
     $match->refresh();
 
@@ -2732,20 +2879,26 @@ test('completed crossover scoring stays on scoring page and syncs default pool t
 
     $match->update(['pitch_id' => $pitch->id]);
 
-    $this->actingAs($scorekeeper);
-
-    $this->patch(route('admin.tournaments.matches.scoring.update', ['tournament' => $tournament, 'match' => $match]), [
+    $match->update([
         'status' => 'completed',
         'home_score' => 13,
         'away_score' => 10,
         'notes' => 'Finished crossover match.',
-    ])->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+    ]);
+
+    $reflectionMethod = new ReflectionMethod(AdminTournamentController::class, 'syncCrossoverPoolingAssignments');
+    $reflectionMethod->setAccessible(true);
+    $reflectionMethod->invoke(app(AdminTournamentController::class), $tournament->id);
+
+    $this->actingAs($scorekeeper);
 
     $homeRegistration->refresh();
     $awayRegistration->refresh();
 
     expect($homeRegistration->pool_name)->toBe('POOL A');
     expect($awayRegistration->pool_name)->toBe('POOL B');
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 2);
 
     $this->actingAs($admin);
 
@@ -2819,6 +2972,8 @@ test('crossover tab prompts admins to continue to pooling when all crossover gam
         'away_score' => 11,
         'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
     ]);
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 2);
 
     $this->actingAs($admin);
 
@@ -2901,6 +3056,8 @@ test('pooling tab keeps pending slots when some crossover games lack decisive re
         'status' => 'scheduled',
         'notes' => TournamentMatch::CROSSOVER_AUTO_GENERATED_MARKER,
     ]);
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 4);
 
     $this->actingAs($admin);
 
@@ -4339,6 +4496,8 @@ test('admin can update an existing crossover match', function () {
     expect($match->round_label)->toBe('Cross 2');
     expect($match->match_number)->toBe(7);
 
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 4);
+
     $this->get(route('admin.tournaments.index', [
         'tournament' => $tournament->id,
         'tab' => 'crossover',
@@ -4433,6 +4592,8 @@ test('admin can delete crossover field assignment and move the game back to unas
 
     expect($match->pitch_id)->toBeNull();
     expect($match->pitch_assigned_by)->toBeNull();
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 2);
 
     $this->get(route('admin.tournaments.index', [
         'tournament' => $tournament->id,
@@ -4608,6 +4769,8 @@ test('crossover edit modal preselects the existing assigned teams', function () 
         'status' => 'scheduled',
     ]);
 
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 2);
+
     $this->actingAs($admin);
 
     $response = $this->get(route('admin.tournaments.index', [
@@ -4624,4 +4787,233 @@ test('crossover edit modal preselects the existing assigned teams', function () 
 
     expect(preg_match('/<option[^>]*(value="'.preg_quote((string) $registrationA1->id, '/').'"[^>]*selected|selected[^>]*value="'.preg_quote((string) $registrationA1->id, '/').'")[^>]*>/', $content))->toBe(1);
     expect(preg_match('/<option[^>]*(value="'.preg_quote((string) $registrationB2->id, '/').'"[^>]*selected|selected[^>]*value="'.preg_quote((string) $registrationB2->id, '/').'")[^>]*>/', $content))->toBe(1);
+});
+
+test('admin users can sync the small tournament fixed Day 1 round robin grid as twenty-four tracked matches', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Small Day One Cup',
+        'slug' => 'small-day-one-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 9) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Small RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.matches.small-day1-schedule.sync', $tournament), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'small-day1-schedule-synced');
+
+    $tracked = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->orderBy('match_number')
+        ->get();
+
+    expect($tracked)->toHaveCount(24);
+
+    $pitches = Pitch::query()->where('tournament_id', $tournament->id)->orderBy('sort_order')->orderBy('id')->get();
+
+    expect($pitches->count())->toBeGreaterThanOrEqual(2);
+
+    expect($tracked->where('pitch_id', $pitches->get(0)->id))->toHaveCount(12);
+    expect($tracked->where('pitch_id', $pitches->get(1)->id))->toHaveCount(12);
+});
+
+test('admin users cannot sync the fixed Day 1 grid once the tournament reaches the bracket team threshold', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Large Threshold Cup',
+        'slug' => 'large-threshold-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, AdminTournamentController::MINIMUM_BRACKET_TEAM_COUNT) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Threshold Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => $number <= AdminTournamentController::BRACKET_TEAM_LIMIT ? 'Bracket A' : 'Bracket B',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->post(route('admin.tournaments.matches.small-day1-schedule.sync', $tournament), [
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'round-robin',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHasErrors('small_day1_schedule');
+});
+
+test('admin users can update round robin match status from the small tournament fixed schedule flow', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Small Status Cup',
+        'slug' => 'small-status-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Status RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+
+    $slotMatches = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->whereIn('match_number', [1, 2])
+        ->orderBy('match_number')
+        ->get();
+
+    expect($slotMatches)->not->toBeEmpty();
+
+    $this->actingAs($admin);
+
+    $this->patch(route('admin.tournaments.matches.small-day1-slot-status.update', $tournament), [
+        'round' => 1,
+        'status' => 'live',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'match-status-updated');
+
+    foreach ($slotMatches as $match) {
+        expect($match->fresh()->status)->toBe('live');
+    }
+});
+
+test('small tournament Round Robin row can be marked completed without scores', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Row Completed Without Scores Cup',
+        'slug' => 'row-completed-no-scores-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'No Score RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+
+    $slotMatches = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->whereIn('match_number', [1, 2])
+        ->orderBy('match_number')
+        ->get();
+
+    expect($slotMatches)->not->toBeEmpty();
+
+    $this->actingAs($admin);
+
+    $this->patch(route('admin.tournaments.matches.small-day1-slot-status.update', $tournament), [
+        'round' => 1,
+        'status' => 'completed',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'match-status-updated')
+        ->assertSessionDoesntHaveErrors();
+
+    foreach ($slotMatches as $match) {
+        $fresh = $match->fresh();
+        expect($fresh->status)->toBe('completed')
+            ->and($fresh->home_score)->toBeNull()
+            ->and($fresh->away_score)->toBeNull();
+    }
 });

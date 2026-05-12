@@ -5,26 +5,6 @@
     $isAdmin = $user->isAdmin();
     $canEnterScores = $user->canEnterScores();
 
-    $adminTabs = [
-        ['key' => 'overview', 'label' => __('Seeding')],
-        ['key' => 'round-robin', 'label' => __('Round Robin')],
-        ['key' => 'bracket-ranking', 'label' => __('Bracket Ranking')],
-        ['key' => 'crossover', 'label' => __('Crossover')],
-        ['key' => 'pooling', 'label' => __('Pooling')],
-        ['key' => 'quarter-final', 'label' => __('Quarter Finals')],
-        ['key' => 'crew', 'label' => __('Semi Finals')],
-        ['key' => 'publish', 'label' => __('Championship')],
-    ];
-    $adminTabKeys = array_column($adminTabs, 'key');
-    $requestedTab = trim(request()->string('tab')->toString(), "\"' ");
-    $requestedTab = $requestedTab === 'basic-info' ? 'round-robin' : $requestedTab;
-    $requestedTab = $requestedTab === 'teams' ? 'bracket-ranking' : $requestedTab;
-    $requestedTab = $requestedTab === 'pitches' ? 'crossover' : $requestedTab;
-    $requestedTab = $requestedTab === 'format' ? 'pooling' : $requestedTab;
-    $requestedTab = $requestedTab === 'matches' ? 'quarter-final' : $requestedTab;
-    $requestedTab = $requestedTab === 'quater-final' ? 'quarter-final' : $requestedTab;
-    $selectedTab = in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'overview';
-
     $pitchModalTournamentId = old('pitch_tournament_id')
         ? (int) old('pitch_tournament_id')
         : null;
@@ -80,7 +60,15 @@
             return [
                 'code' => $code,
                 'count' => $registrations->count(),
-                'registrations' => $registrations->values(),
+                'registrations' => $registrations
+                    ->sort(fn ($left, $right) => [
+                        $left->seed_number ?? PHP_INT_MAX,
+                        $left->id,
+                    ] <=> [
+                        $right->seed_number ?? PHP_INT_MAX,
+                        $right->id,
+                    ])
+                    ->values(),
                 'seed_range' => $seedNumbers->isEmpty()
                     ? null
                     : ($firstSeed === $lastSeed ? (string) $firstSeed : "{$firstSeed}-{$lastSeed}"),
@@ -160,6 +148,41 @@
     $crossoverReadyForManualPairing = $rankedCrossoverRegistrations->count() >= 2;
 
     $hasBracketThreshold = $teamCount >= $minimumBracketTeamCount;
+    $teamStandingRows = $selectedTournament !== null && ! $hasBracketThreshold
+        ? \App\Support\SmallTournamentTeamStanding::forRoundRobin($selectedTournament)
+        : collect();
+    $smallDayOneGridRows = $selectedTournament !== null && ! $hasBracketThreshold
+        ? \App\Support\SmallFixedRoundRobinDayOneSchedule::buildGridRows($selectedTournament)
+        : collect();
+    $smallDayOneOtherRobinMatches = $selectedTournament !== null && ! $hasBracketThreshold
+        ? $roundRobinMatches->filter(fn ($m) => ! \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m))->values()
+        : collect();
+    $adminTabs = [
+        ['key' => 'overview', 'label' => __('Seeding')],
+        ['key' => 'round-robin', 'label' => __('Round Robin')],
+    ];
+    if (! $hasBracketThreshold) {
+        $adminTabs[] = ['key' => 'team-standing', 'label' => __('Team Standing')];
+    }
+    if ($hasBracketThreshold) {
+        $adminTabs[] = ['key' => 'bracket-ranking', 'label' => __('Bracket Ranking')];
+        $adminTabs[] = ['key' => 'crossover', 'label' => __('Crossover')];
+        $adminTabs[] = ['key' => 'pooling', 'label' => __('Pooling')];
+    }
+    $adminTabs = array_merge($adminTabs, [
+        ['key' => 'quarter-final', 'label' => __('Quarter Finals')],
+        ['key' => 'crew', 'label' => __('Semi Finals')],
+        ['key' => 'publish', 'label' => __('Championship')],
+    ]);
+    $adminTabKeys = array_column($adminTabs, 'key');
+    $requestedTab = trim(request()->string('tab')->toString(), "\"' ");
+    $requestedTab = $requestedTab === 'basic-info' ? 'round-robin' : $requestedTab;
+    $requestedTab = $requestedTab === 'teams' ? 'bracket-ranking' : $requestedTab;
+    $requestedTab = $requestedTab === 'pitches' ? 'crossover' : $requestedTab;
+    $requestedTab = $requestedTab === 'format' ? 'pooling' : $requestedTab;
+    $requestedTab = $requestedTab === 'matches' ? 'quarter-final' : $requestedTab;
+    $requestedTab = $requestedTab === 'quater-final' ? 'quarter-final' : $requestedTab;
+    $selectedTab = in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'overview';
     $canCreateMatches = $selectedTournament ? $teamCount >= 2 : false;
     $firstScorableMatch = $selectedTournament?->matches?->first(
         fn ($match): bool => $match->homeRegistration && $match->awayRegistration
@@ -273,6 +296,12 @@
                             @break
                         @case('match-updated')
                             {{ __('Match updated successfully.') }}
+                            @break
+                        @case('small-day1-schedule-synced')
+                            {{ __('Day 1 round robin schedule was saved (Pitch 1 & Pitch 2, up to 24 games).') }}
+                            @break
+                        @case('match-status-updated')
+                            {{ __('Match status updated.') }}
                             @break
                         @case('match-deleted')
                             {{ __('Match deleted successfully.') }}
@@ -421,6 +450,7 @@
                             @include('admin.tournaments.partials.seeding-overview', [
                                 'selectedTournament' => $selectedTournament,
                                 'teamCount' => $teamCount,
+                                'tournamentSeedOrderRegistrations' => $seededRegistrations,
                                 'seededBracketGroups' => $seededBracketGroups,
                                 'unassignedSeededCount' => $unassignedSeededCount,
                                 'minimumBracketTeamCount' => $minimumBracketTeamCount,
@@ -498,6 +528,19 @@
                     </section>
                 @elseif ($selectedTab === 'round-robin')
                     <section class="space-y-6">
+                        @if (! $hasBracketThreshold)
+                            @include('admin.tournaments.partials.small-round-robin-day1-fixed-schedule', [
+                                'selectedTournament' => $selectedTournament,
+                                'smallDayOneGridRows' => $smallDayOneGridRows,
+                                'smallDayOneOtherRobinMatches' => $smallDayOneOtherRobinMatches,
+                                'teamCount' => $teamCount,
+                                'pitchCount' => $pitchCount,
+                                'isAdmin' => $isAdmin,
+                                'canEnterScores' => $canEnterScores,
+                            ])
+                        @endif
+
+                        @if ($hasBracketThreshold)
                         <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
                             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                                 <div>
@@ -562,7 +605,7 @@
                                             <div class="font-semibold text-zinc-900 dark:text-white">{{ $group['code'] }}</div>
                                             <div class="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-300">
                                                 @foreach ($group['registrations'] as $registration)
-                                                    <div>{{ ($registration->seed_number ?? '-') . ' - ' . $registration->team->name }}</div>
+                                                    <div>{{ ($registration->seed_letter ?? '—') }} — {{ $registration->team->name }}</div>
                                                 @endforeach
                                             </div>
                                         </div>
@@ -576,7 +619,9 @@
                                 </p>
                             @endif
                         </section>
+                        @endif
 
+                        @if ($hasBracketThreshold)
                         @php
                             $assignedRoundRobinMatches = $roundRobinMatches->filter(fn ($match) => $match->pitch_id);
                             $totalRobinCount = $roundRobinMatches->count();
@@ -968,8 +1013,13 @@
                                 </div>
                             @endif
                         </section>
+                        @endif
 
                     </section>
+                @elseif ($selectedTab === 'team-standing')
+                    @include('admin.tournaments.partials.team-standing', [
+                        'teamStandingRows' => $teamStandingRows,
+                    ])
                 @elseif ($selectedTab === 'bracket-ranking')
                     <section class="space-y-6">
                         @if ($bracketRankingPreview ?? null)
