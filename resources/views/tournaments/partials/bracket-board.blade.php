@@ -1,5 +1,5 @@
-<div class="mt-8 overflow-x-auto pb-3">
-    <div class="flex min-w-[62rem] items-start gap-10 [--bracket-card-height:9rem] [--bracket-gutter:2.5rem] [--bracket-slot-height:10.9rem] [--bracket-connector-gap:2px]">
+<div class="mt-6 overflow-x-auto pb-3">
+    <div class="flex min-w-[62rem] items-start gap-6 [--bracket-card-height:7.75rem] [--bracket-gutter:2rem] [--bracket-slot-height:8.5rem] [--bracket-connector-gap:2px]">
         @foreach ($bracketColumns as $column)
             @php
                 $isFirstBracketColumn = $loop->first;
@@ -10,7 +10,7 @@
                 <div class="pl-3 text-[1.7rem] font-semibold tracking-tight text-zinc-900">{{ $column['label'] }}</div>
 
                 <div
-                    class="relative mt-4"
+                    class="relative mt-2"
                     style="height: calc({{ $bracketTotalRows }} * var(--bracket-slot-height) + var(--bracket-card-height));"
                 >
                     @foreach ($column['connectors'] as $connector)
@@ -79,10 +79,10 @@
 
                                 <a
                                     href="{{ route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match]) }}"
-                                    class="relative z-10 block h-[var(--bracket-card-height)] rounded-[1.15rem] border border-zinc-200 bg-white px-4 py-3 shadow-sm transition hover:border-zinc-300 hover:shadow-md"
+                                    class="relative z-10 block h-[var(--bracket-card-height)] rounded-[1rem] border border-zinc-200 bg-white px-3.5 py-2 shadow-sm transition hover:border-zinc-300 hover:shadow-md"
                                     wire:navigate
                                 >
-                                    <div class="flex items-start justify-between gap-3">
+                                    <div class="flex items-start justify-between gap-2">
                                         <div class="min-w-0">
                                             <div class="truncate text-[11px] font-semibold uppercase leading-4 text-zinc-900">
                                                 {{ $match->round_label ?: str($match->stage)->replace('_', ' ')->headline() }}
@@ -99,7 +99,7 @@
                                         @endif
                                     </div>
 
-                                    <div class="mt-3 grid grid-cols-[3.7rem_minmax(0,1fr)] gap-4">
+                                    <div class="mt-2 grid grid-cols-[3.35rem_minmax(0,1fr)] gap-3">
                                         <div>
                                             <div class="text-[11px] font-semibold uppercase text-zinc-500">
                                                 {{ $match->scheduled_at ? strtoupper($match->scheduled_at->format('d M')) : 'TBD' }}
@@ -108,12 +108,12 @@
                                                 {{ $match->scheduled_at ? $match->scheduled_at->format('H:i') : 'TBD' }}
                                             </div>
 
-                                            <span class="mt-3 inline-flex rounded-[0.55rem] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
+                                            <span class="mt-2 inline-flex rounded-[0.55rem] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
                                                 {{ $statusLabel }}
                                             </span>
                                         </div>
 
-                                        <div class="space-y-2.5">
+                                        <div class="space-y-1.5">
                                             <div class="flex items-center gap-2">
                                                 <div class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-zinc-200 bg-white text-[10px] font-semibold text-zinc-700">
                                                     @if ($homeTeamLogo)
@@ -193,10 +193,10 @@
 
                                     <a
                                         href="{{ route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match]) }}"
-                                        class="relative z-10 block h-[var(--bracket-card-height)] rounded-[1.15rem] border border-zinc-200 bg-white px-4 py-3 shadow-sm transition hover:border-zinc-300 hover:shadow-md"
+                                        class="relative z-10 block h-[var(--bracket-card-height)] rounded-[1rem] border border-zinc-200 bg-white px-3.5 py-2 shadow-sm transition hover:border-zinc-300 hover:shadow-md"
                                         wire:navigate
                                     >
-                                        <div class="flex items-start justify-between gap-3">
+                                        <div class="flex items-start justify-between gap-2">
                                             <div class="min-w-0">
                                                 <div class="truncate text-[11px] font-semibold uppercase leading-4 text-zinc-900">
                                                     {{ $match->round_label ?: str($match->stage)->replace('_', ' ')->headline() }}
@@ -213,7 +213,7 @@
                                             @endif
                                         </div>
 
-                                        <div class="mt-3 grid grid-cols-[3.7rem_minmax(0,1fr)] gap-4">
+                                        <div class="mt-2 grid grid-cols-[3.35rem_minmax(0,1fr)] gap-3">
                                             <div>
                                                 <div class="text-[11px] font-semibold uppercase text-zinc-500">
                                                     {{ $match->scheduled_at ? strtoupper($match->scheduled_at->format('d M')) : 'TBD' }}
@@ -222,12 +222,12 @@
                                                     {{ $match->scheduled_at ? $match->scheduled_at->format('H:i') : 'TBD' }}
                                                 </div>
 
-                                                <span class="mt-3 inline-flex rounded-[0.55rem] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
+                                                <span class="mt-2 inline-flex rounded-[0.55rem] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
                                                     {{ $statusLabel }}
                                                 </span>
                                             </div>
 
-                                            <div class="space-y-2.5">
+                                            <div class="space-y-1.5">
                                                 <div class="flex items-center gap-2">
                                                     <div class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-zinc-200 bg-white text-[10px] font-semibold text-zinc-700">
                                                         @if ($homeTeamLogo)
