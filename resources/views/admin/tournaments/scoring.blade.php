@@ -17,7 +17,8 @@
         default => 'bg-zinc-100 text-zinc-700',
     };
     $scoreInputVisible = $match->status === 'completed';
-    $isSmallDayOneTrackedRow = \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match);
+    $isSmallDayOneTrackedRow = \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match)
+        || \App\Support\SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($match);
     $scheduleStatusLabel = match ($match->status) {
         'scheduled' => __('Upcoming'),
         'live' => __('Live'),
@@ -41,12 +42,19 @@
     $initialRegistrationId = (string) old('team_registration_id', $homeRegistration?->id);
     $initialScorerId = (string) old('team_member_id');
     $initialAssisterId = (string) old('assist_team_member_id');
-    $setupBackTab = match ($match->stage) {
-        'crossover' => 'crossover',
-        'pool', 'pool_play', 'pooling' => 'pooling',
-        'round_robin' => 'round-robin',
-        default => 'quarter-final',
+    $matchNumber = (int) ($match->match_number ?? 0);
+    $setupBackTab = match (true) {
+        $matchNumber === 48 && \App\Support\SmallDayTwoKnockoutBracket::isSmallDayTwoKnockoutScheduleRow($match) => 'championship',
+        $matchNumber >= 45 && $matchNumber <= 47 && \App\Support\SmallDayTwoKnockoutBracket::isSmallDayTwoKnockoutScheduleRow($match) => 'semi-finals',
+        default => match ($match->stage) {
+            'crossover' => 'crossover',
+            'pool', 'pool_play', 'pooling' => 'pooling',
+            'round_robin' => 'round-robin',
+            'semifinal', 'semi-final', 'semi_final', 'sf', 'semis' => 'semi-finals',
+            default => 'quarter-final',
+        },
     };
+    $spiritScoresByScoredTeamId = $spiritScoresByScoredTeamId ?? collect();
 @endphp
 
 <x-layouts::app :title="__('Game Score')">
@@ -93,6 +101,14 @@
                             {{ __('Open Public Match') }}
                         </a>
                     @endif
+                    <a
+                        href="{{ route('admin.tournaments.matches.pdf', ['tournament' => $tournament, 'match' => $match]) }}"
+                        target="_blank"
+                        rel="noreferrer"
+                        class="inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 dark:border-neutral-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                    >
+                        {{ __('Export match PDF') }}
+                    </a>
                 </div>
             </div>
 
@@ -104,6 +120,9 @@
                             @break
                         @case('score-play-deleted')
                             {{ __('Scoring play removed and totals rebuilt successfully.') }}
+                            @break
+                        @case('spirit-saved')
+                            {{ __('Spirit scores saved successfully.') }}
                             @break
                         @default
                             {{ __('Saved.') }}
@@ -392,6 +411,14 @@
                     </section>
                 @endforeach
             </div>
+
+            @include('admin.tournaments.partials.spirit-scoring-form', [
+                'tournament' => $tournament,
+                'match' => $match,
+                'homeTeam' => $homeTeam,
+                'awayTeam' => $awayTeam,
+                'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
+            ])
             @else
                 <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-center text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-300">
                     {{ $scoringWaitMessage }}

@@ -55,6 +55,7 @@
             'event_type' => $tournament->event_type,
             'division' => $tournament->division,
             'surface' => $tournament->surface,
+            'round_robin_advancing_count' => $tournament->round_robin_advancing_count,
             'info_items' => $tournament->additionalInfoItems(),
             'organizer_items' => $normalizeStoredRows($tournament->organizer_items ?? []),
             'link_items' => $normalizeStoredRows($tournament->link_items ?? [], 'href'),
@@ -128,7 +129,7 @@
                     <div class="absolute right-4 top-4 flex items-center gap-2">
                         @if ($setupRoute && $showSetupButton)
                             <a
-                                href="{{ route($setupRoute, array_merge($tournamentListQueryParams, ['tournament' => $tournament->id, 'tab' => 'overview'])) }}"
+                                href="{{ route($setupRoute, array_merge($tournamentListQueryParams, ['tournament' => $tournament->id, 'tab' => 'games-dashboard'])) }}"
                                 wire:navigate
                                 class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-neutral-300 bg-white text-zinc-700 shadow-sm transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
                                 title="{{ $setupLabel }}"
@@ -225,7 +226,7 @@
                     <div class="flex flex-wrap items-center justify-end gap-2">
                         @if (! $showCompactActions && $setupRoute && $showSetupButton)
                             <a
-                                href="{{ route($setupRoute, array_merge($tournamentListQueryParams, ['tournament' => $tournament->id, 'tab' => 'overview'])) }}"
+                                href="{{ route($setupRoute, array_merge($tournamentListQueryParams, ['tournament' => $tournament->id, 'tab' => 'games-dashboard'])) }}"
                                 wire:navigate
                                 class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                             >

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\TournamentController as AdminTournamentController;
 use App\Models\MatchPlayerStat;
 use App\Models\MatchScoreLog;
+use App\Models\MatchSpiritScore;
 use App\Models\Pitch;
 use App\Models\Team;
 use App\Models\TeamMember;
@@ -11,7 +12,9 @@ use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
 use App\Models\User;
+use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
+use App\Support\SmallTournamentTeamStanding;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -120,7 +123,7 @@ test('admin users can visit the admin tournaments directory', function () {
         ->assertSee('Create Tournament')
         ->assertSee('Tournaments')
         ->assertSee('Register Team')
-        ->assertSee('tab=overview', false)
+        ->assertSee('tab=games-dashboard', false)
         ->assertDontSee('All surfaces')
         ->assertDontSee('All visibility')
         ->assertDontSee('Apply')
@@ -150,6 +153,8 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
         ->assertOk()
         ->assertSee('Tournament Setup Workspace')
+        ->assertSee('Games Dashboard')
+        ->assertSee('tab=games-dashboard', false)
         ->assertSee('Seeding')
         ->assertSee('Round Robin')
         ->assertDontSee('tab=bracket-ranking', false)
@@ -159,12 +164,21 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertSee('Quarter Final')
         ->assertSee('Semi Finals')
         ->assertSee('Championship')
+        ->assertSee('tab=championship', false)
+        ->assertDontSee('tab=publish', false)
+        ->assertDontSee('tab=event-crew', false)
+        ->assertDontSee('tab=crew', false)
         ->assertSee('Auto Seed')
         ->assertDontSee('Save Manual Seeding')
         ->assertDontSee('Manual Team Assignment')
         ->assertDontSee('Quick Actions')
         ->assertDontSee('Readiness Checklist')
         ->assertDontSee('Tournament Summary');
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
+        ->assertOk()
+        ->assertSee('Games Dashboard')
+        ->assertSee('Total Games');
 });
 
 test('team standing tab shows seeded rows for tournaments below bracket workflow threshold', function () {
@@ -217,7 +231,868 @@ test('team standing tab shows seeded rows for tournaments below bracket workflow
         ->assertSeeInOrder(['Alpha Line', 'Beta Line']);
 });
 
-test('team standing tab redirects to seeding when bracket workflow threshold is met', function () {
+test('team standing uses round robin head to head when exactly two teams tie on rank score', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Head To Head Cup',
+        'slug' => 'head-to-head-cup',
+        'venue' => 'North Oval',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'H2H Alpha Winner',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'H2H Beta Runner',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $teamC = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'H2H Charlie Mid',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamD = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'H2H Delta Low',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regC = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamC->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+    $regD = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamD->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    // A and B both finish 2W-1L / 6 pts; A beat B head-to-head but B has a much better goal differential.
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'match_number' => 1,
+        'home_score' => 10,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regC->id,
+        'away_registration_id' => $regA->id,
+        'match_number' => 2,
+        'home_score' => 50,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 3,
+        'home_score' => 5,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regC->id,
+        'match_number' => 4,
+        'home_score' => 30,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 5,
+        'home_score' => 5,
+        'away_score' => 0,
+    ]);
+
+    $tournament->load('matches');
+
+    $rows = SmallTournamentTeamStanding::forRoundRobin($tournament);
+    expect($rows->firstWhere('team_name', 'H2H Alpha Winner')['rank_score'])->toBe(1);
+    expect($rows->firstWhere('team_name', 'H2H Beta Runner')['rank_score'])->toBe(1);
+    expect($rows->firstWhere('team_name', 'H2H Alpha Winner')['tiebreaker']['type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'H2H Alpha Winner')['tiebreaker']['tiebreaker_type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'H2H Alpha Winner')['tiebreaker']['result'])->toBe('won');
+    expect($rows->firstWhere('team_name', 'H2H Beta Runner')['tiebreaker']['result'])->toBe('lost');
+    expect($rows->firstWhere('team_name', 'H2H Alpha Winner')['tiebreaker']['direct_match_id'])->toBe(
+        (int) TournamentMatch::query()->where('tournament_id', $tournament->id)->where('match_number', 1)->value('id'),
+    );
+
+    $names = $rows->pluck('team_name')->all();
+    expect($names[0])->toBe('H2H Alpha Winner');
+    expect($names[1])->toBe('H2H Beta Runner');
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Head-to-head')
+        ->assertSee('Head-to-head winner')
+        ->assertSee('Won direct match vs')
+        ->assertSee('Lost head-to-head vs')
+        ->assertSeeInOrder([
+            'H2H Alpha Winner',
+            'H2H Beta Runner',
+            'H2H Charlie Mid',
+            'H2H Delta Low',
+        ]);
+});
+
+test('team standing uses head to head for mutual pool match stored as stage group', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Group Stage H2H Cup',
+        'slug' => 'group-stage-h2h-cup',
+        'venue' => 'North Oval',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'GrpH2H Alpha',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'GrpH2H Beta',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $teamC = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'GrpH2H Charlie',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamD = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'GrpH2H Delta',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regC = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamC->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+    $regD = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamD->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'match_number' => 1,
+        'home_score' => 10,
+        'away_score' => 0,
+        'stage' => 'group',
+    ]);
+    $mk([
+        'home_registration_id' => $regC->id,
+        'away_registration_id' => $regA->id,
+        'match_number' => 2,
+        'home_score' => 50,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 3,
+        'home_score' => 5,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regC->id,
+        'match_number' => 4,
+        'home_score' => 30,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 5,
+        'home_score' => 5,
+        'away_score' => 0,
+    ]);
+
+    $tournament->load('matches');
+
+    $rows = SmallTournamentTeamStanding::forRoundRobin($tournament);
+    expect($rows->firstWhere('team_name', 'GrpH2H Alpha')['tiebreaker']['type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'GrpH2H Beta')['tiebreaker']['type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'GrpH2H Alpha')['tiebreaker']['result'])->toBe('won');
+    expect($rows->pluck('team_name')->take(2)->all())->toBe(['GrpH2H Alpha', 'GrpH2H Beta']);
+});
+
+test('team standing ranks three way rank_score tie by accumulated points', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Three Way Tie Cup',
+        'slug' => 'three-way-tie-cup',
+        'venue' => 'North Oval',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Three A',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Three B',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $teamC = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Three C',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regC = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamC->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    // Each team 1W-1L (rank_score 0); symmetric 10–0 cycle so goals for / against / differential match for all three.
+    // Standings then use accumulated-points multi tiebreaker among the trio (sub-run size 3).
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'match_number' => 1,
+        'home_score' => 10,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regC->id,
+        'match_number' => 2,
+        'home_score' => 10,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regC->id,
+        'away_registration_id' => $regA->id,
+        'match_number' => 3,
+        'home_score' => 10,
+        'away_score' => 0,
+    ]);
+
+    $tournament->load('matches');
+
+    $rows = SmallTournamentTeamStanding::forRoundRobin($tournament);
+    expect($rows->pluck('rank_score')->unique()->count())->toBe(1);
+    expect($rows->pluck('team_name')->all())->toBe(['Three A', 'Three B', 'Three C']);
+
+    foreach ($rows as $row) {
+        expect($row['tiebreaker']['type'] ?? null)->toBe('accumulated_points_multi');
+    }
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Accumulated points tiebreaker')
+        ->assertSeeInOrder(['Three A', 'Three B', 'Three C']);
+});
+
+test('team standing marks every team below advancing cutoff as will not advance', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Advancing Cutoff Cup',
+        'slug' => 'advancing-cutoff-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'round_robin_advancing_count' => 2,
+    ]);
+
+    $mkTeam = static fn (string $name) => Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => $name,
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $teamTop = $mkTeam('Cutoff Top');
+    $teamMid = $mkTeam('Cutoff Mid');
+    $teamHi = $mkTeam('Cutoff Elim Hi');
+    $teamLo = $mkTeam('Cutoff Elim Lo');
+
+    $regTop = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamTop->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regMid = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamMid->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regHi = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamHi->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+    $regLo = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamLo->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regMid->id, 'match_number' => 1, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regHi->id, 'match_number' => 2, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regLo->id, 'match_number' => 3, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regMid->id, 'away_registration_id' => $regHi->id, 'match_number' => 4, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regMid->id, 'away_registration_id' => $regLo->id, 'match_number' => 5, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regHi->id, 'away_registration_id' => $regLo->id, 'match_number' => 6, 'home_score' => 1, 'away_score' => 0]);
+
+    $tournament->load(['matches', 'registrations.team']);
+
+    $bundle = SmallTournamentTeamStanding::roundRobinTeamStanding($tournament);
+    expect($bundle['meta']['advancing_teams_count'])->toBe(2);
+    expect($bundle['meta']['eliminated_teams_count'])->toBe(2);
+    expect($bundle['meta']['applies_elimination'])->toBeTrue();
+    expect($bundle['meta']['standings_status'])->toBe('final');
+
+    $rows = $bundle['rows'];
+    expect($rows->firstWhere('team_name', 'Cutoff Top')['is_eliminated'])->toBeFalse();
+    expect($rows->firstWhere('team_name', 'Cutoff Mid')['is_eliminated'])->toBeFalse();
+    expect($rows->firstWhere('team_name', 'Cutoff Elim Hi')['is_eliminated'])->toBeTrue();
+    expect($rows->firstWhere('team_name', 'Cutoff Elim Lo')['is_eliminated'])->toBeTrue();
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Top 2 teams advance. Bottom 2 team(s) will not advance.')
+        ->assertSee('Will not advance')
+        ->assertSeeInOrder(['Cutoff Top', 'Cutoff Mid', 'Cutoff Elim Hi', 'Cutoff Elim Lo']);
+});
+
+test('team standing stays provisional until every scheduled round robin game is completed', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Provisional RR Cup',
+        'slug' => 'provisional-rr-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'round_robin_advancing_count' => 2,
+    ]);
+
+    $mkTeam = static fn (string $name) => Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => $name,
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $teamTop = $mkTeam('Prov Top');
+    $teamMid = $mkTeam('Prov Mid');
+    $teamHi = $mkTeam('Prov Hi');
+    $teamLo = $mkTeam('Prov Lo');
+
+    $regTop = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamTop->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regMid = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamMid->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regHi = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamHi->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+    $regLo = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamLo->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regMid->id, 'match_number' => 1, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regHi->id, 'match_number' => 2, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regTop->id, 'away_registration_id' => $regLo->id, 'match_number' => 3, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regMid->id, 'away_registration_id' => $regHi->id, 'match_number' => 4, 'home_score' => 1, 'away_score' => 0]);
+    $mk(['home_registration_id' => $regMid->id, 'away_registration_id' => $regLo->id, 'match_number' => 5, 'home_score' => 1, 'away_score' => 0]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'stage' => 'round_robin',
+        'round_label' => 'RR',
+        'scheduled_at' => null,
+        'status' => 'scheduled',
+        'home_registration_id' => $regHi->id,
+        'away_registration_id' => $regLo->id,
+        'match_number' => 6,
+        'home_score' => null,
+        'away_score' => null,
+    ]);
+
+    $tournament->load(['matches', 'registrations.team']);
+
+    $bundle = SmallTournamentTeamStanding::roundRobinTeamStanding($tournament);
+    expect($bundle['meta']['standings_status'])->toBe('provisional');
+    expect($bundle['meta']['round_robin_matches_total'])->toBe(6);
+    expect($bundle['meta']['round_robin_matches_completed'])->toBe(5);
+    expect($bundle['meta']['applies_elimination'])->toBeFalse();
+
+    $rows = $bundle['rows'];
+    expect($rows->where('is_provisional_below_cutoff', true)->count())->toBe(2);
+    expect($rows->firstWhere('team_name', 'Prov Top')['is_provisional_below_cutoff'])->toBeFalse();
+    expect($rows->firstWhere('team_name', 'Prov Mid')['is_provisional_below_cutoff'])->toBeFalse();
+    expect($rows->pluck('is_eliminated')->every(fn ($v) => $v === false))->toBeTrue();
+    expect($rows->firstWhere('team_name', 'Prov Hi')['elimination_note'])->toBe('Currently below cutoff');
+    expect($rows->firstWhere('team_name', 'Prov Lo')['elimination_note'])->toBe('Currently below cutoff');
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Current Standings — Round Robin still in progress')
+        ->assertSee('Provisional')
+        ->assertSee('Currently below cutoff')
+        ->assertSee('5 of 6 Round Robin games completed.')
+        ->assertDontSee('Will not advance');
+});
+
+test('resolveRoundRobinAdvancingTeamCount infers from playoff stage when not configured', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Infer Advancing Cup',
+        'slug' => 'infer-advancing-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'round_robin_advancing_count' => null,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Infer A',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Infer B',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'stage' => 'quarterfinal',
+        'round_label' => 'QF',
+        'scheduled_at' => null,
+        'status' => 'scheduled',
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'match_number' => 1,
+        'home_score' => null,
+        'away_score' => null,
+    ]);
+
+    $tournament->load('matches');
+
+    expect(SmallTournamentTeamStanding::resolveRoundRobinAdvancingTeamCount($tournament, 9))->toBe(8);
+    expect(SmallTournamentTeamStanding::resolveRoundRobinAdvancingTeamCount($tournament, 5))->toBe(5);
+});
+
+test('team standing shows head-to-head badges when two-way tie is resolved by direct match even if secondary metrics agree', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'H2H Always Labeled Cup',
+        'slug' => 'h2h-always-labeled-cup',
+        'venue' => 'North Oval',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'NoBadge Alpha',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'NoBadge Beta',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+    $teamC = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'NoBadge Charlie',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamD = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'NoBadge Delta',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+    $regC = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamC->id,
+        'status' => 'approved',
+        'seed_number' => 3,
+    ]);
+    $regD = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamD->id,
+        'status' => 'approved',
+        'seed_number' => 4,
+    ]);
+
+    $mk = static function (array $attrs) use ($tournament): void {
+        TournamentMatch::query()->create(array_merge([
+            'tournament_id' => $tournament->id,
+            'pitch_id' => null,
+            'stage' => 'round_robin',
+            'round_label' => 'RR',
+            'scheduled_at' => null,
+            'status' => 'completed',
+        ], $attrs));
+    };
+
+    // Full 4-team round robin: Alpha and Beta both finish 2W-1L (rank_score +1).
+    // Alpha wins the direct A–B match; Alpha also leads on accumulated points vs Beta.
+    // Head-to-head metadata must still appear (regression: old code hid badges when secondary agreed).
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'match_number' => 1,
+        'home_score' => 5,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regC->id,
+        'away_registration_id' => $regA->id,
+        'match_number' => 2,
+        'home_score' => 1,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 3,
+        'home_score' => 10,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regC->id,
+        'match_number' => 4,
+        'home_score' => 2,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 5,
+        'home_score' => 3,
+        'away_score' => 0,
+    ]);
+    $mk([
+        'home_registration_id' => $regC->id,
+        'away_registration_id' => $regD->id,
+        'match_number' => 6,
+        'home_score' => 0,
+        'away_score' => 2,
+    ]);
+
+    $tournament->load('matches');
+
+    $rows = SmallTournamentTeamStanding::forRoundRobin($tournament);
+    expect($rows->firstWhere('team_name', 'NoBadge Alpha')['tiebreaker']['type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'NoBadge Alpha')['tiebreaker']['result'] ?? null)->toBe('won');
+    expect($rows->firstWhere('team_name', 'NoBadge Beta')['tiebreaker']['type'] ?? null)->toBe('head_to_head');
+    expect($rows->firstWhere('team_name', 'NoBadge Beta')['tiebreaker']['result'] ?? null)->toBe('lost');
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
+        ->assertOk()
+        ->assertSee('Head-to-head')
+        ->assertSee('Lost head-to-head vs');
+});
+
+test('compareHeadToHead ignores playoff stages and uses decisive round robin direct match only', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'H2H Stage Filter Cup',
+        'slug' => 'h2h-stage-filter-cup',
+        'venue' => 'Arena',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $teamA = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Stage Filter A',
+        'address' => 'CDO',
+        'status' => 'active',
+    ]);
+    $teamB = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Stage Filter B',
+        'address' => 'Iligan',
+        'status' => 'active',
+    ]);
+
+    $regA = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamA->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+    $regB = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $teamB->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'home_registration_id' => $regA->id,
+        'away_registration_id' => $regB->id,
+        'stage' => 'round_robin',
+        'round_label' => 'RR',
+        'match_number' => 1,
+        'scheduled_at' => null,
+        'status' => 'completed',
+        'home_score' => 1,
+        'away_score' => 0,
+    ]);
+
+    TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => null,
+        'home_registration_id' => $regB->id,
+        'away_registration_id' => $regA->id,
+        'stage' => 'quarter_final',
+        'round_label' => 'QF',
+        'match_number' => 2,
+        'scheduled_at' => null,
+        'status' => 'completed',
+        'home_score' => 99,
+        'away_score' => 0,
+    ]);
+
+    $tournament->load('matches');
+
+    expect(SmallTournamentTeamStanding::compareHeadToHead($regA->id, $regB->id, $tournament))->toBeLessThan(0);
+});
+
+test('team standing tab redirects to games dashboard when bracket workflow threshold is met', function () {
     $admin = User::factory()->admin()->create();
     $owner = User::factory()->create();
 
@@ -238,7 +1113,7 @@ test('team standing tab redirects to seeding when bracket workflow threshold is 
     $this->actingAs($admin);
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'team-standing']))
-        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']));
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'games-dashboard']));
 });
 
 test('admin setup reveals bracket workflow tabs after registration count reaches threshold', function () {
@@ -274,6 +1149,7 @@ test('admin setup reveals bracket workflow tabs after registration count reaches
 
 test('round robin tab no longer shows the tournament profile form', function () {
     $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
 
     $tournament = Tournament::query()->create([
         'created_by' => $admin->id,
@@ -286,6 +1162,8 @@ test('round robin tab no longer shows the tournament profile form', function () 
         'division' => 'Open',
         'is_public' => false,
     ]);
+
+    distrackPadRegistrationsForBracketWorkflowTabs($tournament, $owner, 0);
 
     $this->actingAs($admin);
 
@@ -1278,7 +2156,7 @@ test('admin pooling tab loads under tab=pooling and legacy format links redirect
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']));
 
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'pooling']))
-        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']));
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'games-dashboard']));
 
     $teamOwner = User::factory()->create();
 
@@ -1314,8 +2192,286 @@ test('legacy tab=matches redirects to tab=quarter-final on tournament setup', fu
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
         ->assertOk()
         ->assertSee('Quarter Finals', false)
-        ->assertSee('Generate Quarter Finals from pooling', false)
-        ->assertSee('Cannot generate Quarter Finals yet', false);
+        ->assertSee('Quarter finals 19', false)
+        ->assertSee('Quarterfinals 20', false)
+        ->assertSee('Ranking Path', false)
+        ->assertSee('Ranking 21', false)
+        ->assertSee('Teams pending Quarter Finals results.', false)
+        ->assertDontSee('Semi Final · Game 43', false)
+        ->assertDontSee('Ranking 5–8 · Game 45', false)
+        ->assertDontSee('Ranking 7–8 · Game 46', false)
+        ->assertDontSee('Ranking 3–4 · Game 47', false)
+        ->assertDontSee('Championship · Game 48', false);
+});
+
+test('legacy tab=crew redirects to tab=semi-finals on tournament setup', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Semi Tab Crew Legacy Cup',
+        'slug' => 'semi-tab-crew-legacy-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'crew']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'semi-finals']));
+});
+
+test('legacy tab=publish redirects to tab=championship on tournament setup', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Publish Tab Legacy Cup',
+        'slug' => 'publish-tab-legacy-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'publish']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'championship']));
+});
+
+test('small tournament championship tab lists game forty-eight with bracket placeholders before semi-finals are played', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Championship Tab Cup',
+        'slug' => 'championship-tab-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Championship Tab Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'championship']))
+        ->assertOk()
+        ->assertSee('Game 48', false)
+        ->assertSee('W43', false)
+        ->assertSee('W44', false)
+        ->assertDontSee('Championship · Game 48', false);
+});
+
+test('legacy tab=event-crew redirects to tab=semi-finals on tournament setup', function () {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Event Crew Legacy Cup',
+        'slug' => 'event-crew-legacy-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'event-crew']))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'semi-finals']));
+});
+
+test('admin can persist small tournament day 2 knockout bracket match status via matches status route', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Small Knockout Cup',
+        'slug' => 'small-knockout-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Knockout Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]);
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    $match = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 37)
+        ->where('stage', 'quarterfinal')
+        ->first();
+
+    expect($match)->not->toBeNull();
+
+    $this->actingAs($admin)
+        ->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->patch(route('admin.tournaments.matches.status.update', [
+            'tournament' => $tournament,
+            'match' => $match,
+        ]), [
+            'status' => 'live',
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'quarter-final',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', [
+            'tournament' => $tournament->id,
+            'tab' => 'quarter-final',
+        ]));
+
+    expect($match->fresh()->status)->toBe('live');
+});
+
+test('small tournament placement knockout match can be marked completed without preset scores then persist player goals', function (): void {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Ranking Path Score Cup',
+        'slug' => 'ranking-path-score-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect();
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'RP Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        $registrations->push(TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]));
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    $match = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 41)
+        ->where('stage', 'placement')
+        ->first();
+
+    expect($match)->not->toBeNull();
+
+    $homeRegistration = $registrations->get(0);
+    $awayRegistration = $registrations->get(1);
+
+    $match->forceFill([
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+    ])->save();
+
+    $homeMember = TeamMember::query()->create([
+        'team_id' => $homeRegistration->team_id,
+        'name' => 'RP Home Scorer',
+        'gender' => 'Male',
+        'role' => 'captain',
+    ]);
+
+    $awayMember = TeamMember::query()->create([
+        'team_id' => $awayRegistration->team_id,
+        'name' => 'RP Away Scorer',
+        'gender' => 'Female',
+        'role' => 'captain',
+    ]);
+
+    $this->actingAs($admin)
+        ->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->patch(route('admin.tournaments.matches.status.update', [
+            'tournament' => $tournament,
+            'match' => $match,
+        ]), [
+            'status' => 'completed',
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'quarter-final',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', [
+            'tournament' => $tournament->id,
+            'tab' => 'quarter-final',
+        ]))
+        ->assertSessionDoesntHaveErrors();
+
+    expect($match->fresh()->status)->toBe('completed')
+        ->and($match->fresh()->home_score)->toBeNull()
+        ->and($match->fresh()->away_score)->toBeNull();
+
+    $url = route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match]);
+
+    $this->actingAs($scorekeeper)->patchJson($url, [
+        'team_member_id' => $homeMember->id,
+        'field' => 'goals',
+        'value' => 5,
+    ])->assertOk()->assertJson(['ok' => true, 'home_score' => 5, 'away_score' => 0]);
+
+    $this->actingAs($scorekeeper)->patchJson($url, [
+        'team_member_id' => $awayMember->id,
+        'field' => 'goals',
+        'value' => 3,
+    ])->assertOk()->assertJson(['ok' => true, 'home_score' => 5, 'away_score' => 3]);
+
+    $match->refresh();
+    expect($match->home_score)->toBe(5)
+        ->and($match->away_score)->toBe(3);
+
+    expect(MatchPlayerStat::query()->where('match_id', $match->id)->count())->toBe(2);
 });
 
 test('generating quarter finals without finalized pooling shows validation error', function () {
@@ -2807,6 +3963,235 @@ test('scorekeepers can enter a completed game score manually from the scoring pa
     expect($match->home_score)->toBe(11);
     expect($match->away_score)->toBe(8);
     expect($match->notes)->toBe('Entered after the scheduled game finished.');
+});
+
+test('scorekeepers can save spirit scores for a completed match', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Spirit Cup',
+        'slug' => 'spirit-cup-test',
+        'venue' => 'Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Spirit Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Spirit Away',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'user_id' => null,
+        'name' => 'Sam Spirit Home',
+        'nickname' => null,
+        'gender' => 'male',
+        'age' => 25,
+        'address' => null,
+        'role' => 'spirit_captain',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $awayTeam->id,
+        'user_id' => null,
+        'name' => 'Alex Spirit Away',
+        'nickname' => null,
+        'gender' => 'female',
+        'age' => 24,
+        'address' => null,
+        'role' => 'spirit_captain',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 7,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'scheduled',
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Spirit Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id, 'status' => 'completed', 'home_score' => 10, 'away_score' => 8]);
+
+    $payload = [
+        'spirit' => [
+            'home' => [
+                'knowledge_rules_score' => 3,
+                'fouls_body_contact_score' => 2,
+                'fair_mindedness_score' => 3,
+                'positive_attitude_score' => 2,
+                'communication_respect_score' => 3,
+                'notes' => 'Home notes',
+            ],
+            'away' => [
+                'knowledge_rules_score' => 2,
+                'fouls_body_contact_score' => 2,
+                'fair_mindedness_score' => 2,
+                'positive_attitude_score' => 2,
+                'communication_respect_score' => 2,
+                'notes' => null,
+            ],
+        ],
+    ];
+
+    $this->actingAs($scorekeeper);
+
+    $this->post(route('admin.tournaments.matches.scoring.spirit.store', ['tournament' => $tournament, 'match' => $match]), $payload)
+        ->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]));
+
+    $homeRow = MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $homeTeam->id)->first();
+    $awayRow = MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $awayTeam->id)->first();
+
+    expect($homeRow)->not->toBeNull();
+    expect($awayRow)->not->toBeNull();
+    expect($homeRow->scoring_team_id)->toBe($awayTeam->id);
+    expect($awayRow->scoring_team_id)->toBe($homeTeam->id);
+    expect($homeRow->total_score)->toBe(13);
+    expect($awayRow->total_score)->toBe(10);
+    expect($homeRow->spirit_captain_id)->not->toBeNull();
+    expect($awayRow->spirit_captain_id)->not->toBeNull();
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertSee('Spirit Scoring', false)
+        ->assertSee('Sam Spirit Home', false);
+});
+
+test('scorekeepers can download a match scoring PDF', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'PDF Cup',
+        'slug' => 'pdf-cup-test',
+        'venue' => 'Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'PDF Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'PDF Away',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'user_id' => null,
+        'name' => 'Striker One',
+        'nickname' => null,
+        'gender' => 'male',
+        'age' => 22,
+        'address' => null,
+        'role' => 'member',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 9,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'completed',
+        'home_score' => 10,
+        'away_score' => 7,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'PDF Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $homeTeam->load('members');
+    $pdfScoreTableHtml = view('admin.tournaments.matches.partials.pdf-score-table', [
+        'team' => $homeTeam,
+        'playerStats' => collect(),
+        'totalScore' => 10,
+        'side' => 'home',
+    ])->render();
+    expect($pdfScoreTableHtml)->toContain('class="score-table"')
+        ->and($pdfScoreTableHtml)->toContain('class="col-number"')
+        ->and($pdfScoreTableHtml)->toContain('gender-row');
+
+    $this->actingAs($scorekeeper);
+
+    $response = $this->get(route('admin.tournaments.matches.pdf', ['tournament' => $tournament, 'match' => $match]));
+
+    $response->assertOk();
+    $response->assertHeader('content-type', 'application/pdf');
+    expect(strlen($response->getContent()))->toBeGreaterThan(800);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertSee('Export match PDF', false);
 });
 
 test('completed crossover scoring stays on scoring page and syncs default pool tags', function () {

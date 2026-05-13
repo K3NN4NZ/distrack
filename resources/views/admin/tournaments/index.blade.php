@@ -14,16 +14,11 @@
     $matchModalTournamentId = old('match_tournament_id')
         ? (int) old('match_tournament_id')
         : null;
-    $crewModalTournamentId = old('crew_tournament_id')
-        ? (int) old('crew_tournament_id')
-        : null;
-
     $showPitchModal = $selectedTournament && $pitchModalTournamentId === $selectedTournament->id;
     $showRegisterModal = $selectedTournament && $registerModalTournamentId === $selectedTournament->id;
     $matchFormIntent = old('match_form_intent');
     $showMatchModal = $selectedTournament && $matchModalTournamentId === $selectedTournament->id
         && ($matchFormIntent === null || $matchFormIntent === '' || $matchFormIntent === 'general_match_add');
-    $showCrewModal = $selectedTournament && $crewModalTournamentId === $selectedTournament->id;
     $seedOrderBracketModalCode = ($seedOrderBracket = trim((string) old('seed_order_bracket_code', ''))) !== ''
         ? $seedOrderBracket
         : null;
@@ -31,7 +26,6 @@
     $teamCount = $selectedTournament?->registrations?->count() ?? 0;
     $pitchCount = $selectedTournament?->pitches?->count() ?? 0;
     $matchCount = $selectedTournament?->matches?->count() ?? 0;
-    $crewCount = $selectedTournament?->crewMembers?->count() ?? 0;
     $seededRegistrations = collect($selectedTournament?->registrations ?? [])
         ->sort(fn ($left, $right) => [
             $left->seed_number ?? PHP_INT_MAX,
@@ -148,16 +142,25 @@
     $crossoverReadyForManualPairing = $rankedCrossoverRegistrations->count() >= 2;
 
     $hasBracketThreshold = $teamCount >= $minimumBracketTeamCount;
-    $teamStandingRows = $selectedTournament !== null && ! $hasBracketThreshold
-        ? \App\Support\SmallTournamentTeamStanding::forRoundRobin($selectedTournament)
-        : collect();
+    $teamStandingBundle = $selectedTournament !== null && ! $hasBracketThreshold
+        ? \App\Support\SmallTournamentTeamStanding::roundRobinTeamStanding($selectedTournament)
+        : null;
+    $teamStandingRows = $teamStandingBundle['rows'] ?? collect();
+    $teamStandingMeta = $teamStandingBundle['meta'] ?? null;
     $smallDayOneGridRows = $selectedTournament !== null && ! $hasBracketThreshold
         ? \App\Support\SmallFixedRoundRobinDayOneSchedule::buildGridRows($selectedTournament)
         : collect();
+    $smallDayTwoGridRows = $selectedTournament !== null && ! $hasBracketThreshold
+        ? \App\Support\SmallFixedRoundRobinDayTwoSchedule::buildGridRows($selectedTournament)
+        : collect();
     $smallDayOneOtherRobinMatches = $selectedTournament !== null && ! $hasBracketThreshold
-        ? $roundRobinMatches->filter(fn ($m) => ! \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m))->values()
+        ? $roundRobinMatches
+            ->filter(fn ($m) => ! \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m)
+                && ! \App\Support\SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($m))
+            ->values()
         : collect();
     $adminTabs = [
+        ['key' => 'games-dashboard', 'label' => __('Games Dashboard')],
         ['key' => 'overview', 'label' => __('Seeding')],
         ['key' => 'round-robin', 'label' => __('Round Robin')],
     ];
@@ -171,8 +174,8 @@
     }
     $adminTabs = array_merge($adminTabs, [
         ['key' => 'quarter-final', 'label' => __('Quarter Finals')],
-        ['key' => 'crew', 'label' => __('Semi Finals')],
-        ['key' => 'publish', 'label' => __('Championship')],
+        ['key' => 'semi-finals', 'label' => __('Semi Finals')],
+        ['key' => 'championship', 'label' => __('Championship')],
     ]);
     $adminTabKeys = array_column($adminTabs, 'key');
     $requestedTab = trim(request()->string('tab')->toString(), "\"' ");
@@ -182,45 +185,13 @@
     $requestedTab = $requestedTab === 'format' ? 'pooling' : $requestedTab;
     $requestedTab = $requestedTab === 'matches' ? 'quarter-final' : $requestedTab;
     $requestedTab = $requestedTab === 'quater-final' ? 'quarter-final' : $requestedTab;
-    $selectedTab = in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'overview';
+    $selectedTab = $requestedTab === ''
+        ? 'games-dashboard'
+        : (in_array($requestedTab, $adminTabKeys, true) ? $requestedTab : 'games-dashboard');
     $canCreateMatches = $selectedTournament ? $teamCount >= 2 : false;
     $firstScorableMatch = $selectedTournament?->matches?->first(
         fn ($match): bool => $match->homeRegistration && $match->awayRegistration
     );
-
-    $readinessChecks = $selectedTournament && $isAdmin
-        ? [
-            [
-                'label' => __('Basic info complete'),
-                'ready' => filled($selectedTournament->name)
-                    && filled($selectedTournament->venue)
-                    && filled($selectedTournament->province)
-                    && filled($selectedTournament->city)
-                    && filled($selectedTournament->barangay),
-                'detail' => $selectedTournament->addressLabel() ?: __('Location to be announced'),
-            ],
-            [
-                'label' => __('Teams registered'),
-                'ready' => $teamCount > 0,
-                'detail' => trans_choice('{0} No teams yet|{1} :count team ready|[2,*] :count teams ready', $teamCount, ['count' => $teamCount]),
-            ],
-            [
-                'label' => __('Pitches added'),
-                'ready' => $pitchCount > 0,
-                'detail' => trans_choice('{0} No pitches yet|{1} :count pitch ready|[2,*] :count pitches ready', $pitchCount, ['count' => $pitchCount]),
-            ],
-            [
-                'label' => __('Matches scheduled'),
-                'ready' => $matchCount > 0,
-                'detail' => trans_choice('{0} No matches yet|{1} :count match scheduled|[2,*] :count matches scheduled', $matchCount, ['count' => $matchCount]),
-            ],
-            [
-                'label' => __('Public preview'),
-                'ready' => (bool) $selectedTournament->is_public,
-                'detail' => $selectedTournament->is_public ? __('Published on the public board') : __('Still private'),
-            ],
-        ]
-        : [];
 
     $frisbeeStageOptions = [
         ['value' => 'seeding', 'label' => __('Day 0 - Seeding')],
@@ -345,7 +316,7 @@
                     'action' => route('admin.tournaments.store'),
                     'submitLabel' => __('Create Tournament'),
                     'hiddenFields' => [
-                        'redirect_tab' => 'overview',
+                        'redirect_tab' => 'games-dashboard',
                     ],
                 ])
             </section>
@@ -436,7 +407,7 @@
                     </nav>
                 </section>
 
-                @if ($selectedTab === 'overview')
+                @if ($selectedTab === 'games-dashboard')
                     <section class="space-y-6">
                         @include('admin.tournaments.partials.game-score-dashboard', [
                             'selectedTournament' => $selectedTournament,
@@ -445,7 +416,9 @@
                             'showAddMatchButton' => false,
                             'showPublicLinks' => $selectedTournament->is_public,
                         ])
-
+                    </section>
+                @elseif ($selectedTab === 'overview')
+                    <section class="space-y-6">
                         <div data-seeding-overview-container>
                             @include('admin.tournaments.partials.seeding-overview', [
                                 'selectedTournament' => $selectedTournament,
@@ -533,6 +506,15 @@
                                 'selectedTournament' => $selectedTournament,
                                 'smallDayOneGridRows' => $smallDayOneGridRows,
                                 'smallDayOneOtherRobinMatches' => $smallDayOneOtherRobinMatches,
+                                'teamCount' => $teamCount,
+                                'pitchCount' => $pitchCount,
+                                'isAdmin' => $isAdmin,
+                                'canEnterScores' => $canEnterScores,
+                            ])
+
+                            @include('admin.tournaments.partials.small-round-robin-day2-fixed-schedule', [
+                                'selectedTournament' => $selectedTournament,
+                                'smallDayTwoGridRows' => $smallDayTwoGridRows,
                                 'teamCount' => $teamCount,
                                 'pitchCount' => $pitchCount,
                                 'isAdmin' => $isAdmin,
@@ -1019,6 +1001,7 @@
                 @elseif ($selectedTab === 'team-standing')
                     @include('admin.tournaments.partials.team-standing', [
                         'teamStandingRows' => $teamStandingRows,
+                        'teamStandingMeta' => $teamStandingMeta,
                     ])
                 @elseif ($selectedTab === 'bracket-ranking')
                     <section class="space-y-6">
@@ -1117,103 +1100,44 @@
                         'crossoverMatches' => $crossoverMatches,
                         'canEnterScores' => $canEnterScores,
                         'canCreateMatches' => $canCreateMatches,
+                        'hasBracketThreshold' => $hasBracketThreshold,
+                        'isAdmin' => $isAdmin,
                     ])
-                @elseif ($selectedTab === 'crew')
-                    <section class="space-y-6">
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Crew') }}</h2>
-                                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                        {{ __('Publish the staff directory here while keeping the add form inside a modal.') }}
-                                    </p>
-                                </div>
-
-                                <flux:modal.trigger name="setup-add-crew-modal-{{ $selectedTournament->id }}">
-                                    <flux:button variant="primary">
-                                        {{ __('Add Crew Member') }}
-                                    </flux:button>
-                                </flux:modal.trigger>
-                            </div>
-                        </section>
-
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="mb-4 flex items-center justify-between gap-4">
-                                <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Crew Directory') }}</h2>
-                                <span class="rounded-md border border-neutral-200 px-3 py-1 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                    {{ trans_choice('{0} No crew entries|{1} :count crew entry|[2,*] :count crew entries', $crewCount, ['count' => $crewCount]) }}
-                                </span>
-                            </div>
-
-                            <div class="space-y-3">
-                                @forelse ($selectedTournament->crewMembers as $crewMember)
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="flex items-start justify-between gap-3">
-                                            <div>
-                                                <div class="font-semibold text-zinc-900 dark:text-white">{{ $crewMember->name }}</div>
-                                                <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                                    {{ $crewMember->category }}
-                                                    @if ($crewMember->title)
-                                                        {{ ' | '.$crewMember->title }}
-                                                    @endif
-                                                </div>
-                                            </div>
-                                            <div class="text-xs text-zinc-500 dark:text-zinc-400">
-                                                {{ __('Order: :order', ['order' => $crewMember->sort_order]) }}
-                                            </div>
-                                        </div>
-                                    </div>
-                                @empty
-                                    <div class="rounded-xl border border-dashed border-neutral-300 p-4 text-sm text-zinc-600 dark:border-neutral-700 dark:text-zinc-300">
-                                        {{ __('No crew entries have been added yet.') }}
-                                    </div>
-                                @endforelse
-                            </div>
-                        </section>
-                    </section>
-                @elseif ($selectedTab === 'publish')
-                    <section class="space-y-6">
-                        <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                                <div>
-                                    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Publish & Preview') }}</h2>
-                                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                                        {{ __('Review the public-facing snapshot and confirm the tournament is ready before pushing it live.') }}
-                                    </p>
-                                </div>
-
-                                <a
-                                    href="{{ route('admin.tournaments.index', ['tournament' => $selectedTournament->id, 'tab' => 'round-robin']) }}"
-                                    wire:navigate
-                                    class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                                >
-                                    {{ __('Edit Round Robin') }}
-                                </a>
-                            </div>
-
-                            <div class="mt-5 grid gap-3 md:grid-cols-2">
-                                @foreach ($readinessChecks as $check)
-                                    <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <div class="flex items-center gap-3">
-                                            <span class="h-2.5 w-2.5 rounded-full {{ $check['ready'] ? 'bg-emerald-500' : 'bg-amber-500' }}"></span>
-                                            <div class="font-medium text-zinc-900 dark:text-white">{{ $check['label'] }}</div>
-                                        </div>
-                                        <div class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{{ $check['detail'] }}</div>
-                                    </div>
-                                @endforeach
-                            </div>
-                        </section>
-
-                        @include('admin.tournaments.partials.public-profile-snapshot', [
-                            'tournament' => $selectedTournament,
+                @elseif ($selectedTab === 'semi-finals')
+                    @if (! $hasBracketThreshold)
+                        @include('admin.tournaments.partials.small-day-two-knockout-bracket', [
+                            'selectedTournament' => $selectedTournament,
+                            'canEnterScores' => $canEnterScores,
+                            'canCreateMatches' => $canCreateMatches,
+                            'isAdmin' => $isAdmin,
+                            'sectionsOnly' => ['semi_finals', 'ranking_56_78', 'ranking_34'],
+                            'hideBracketOverview' => true,
+                            'knockoutScheduleRedirectTab' => 'semi-finals',
                         ])
-                    </section>
+                    @else
+                        <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-300">
+                            {{ __('Semi Finals scheduling for this tournament size is managed from pooling and bracket generation. Switch to a small-tournament Day 2 knockout (fewer than :count teams) to use the fixed semi-final slots.', ['count' => $minimumBracketTeamCount]) }}
+                        </section>
+                    @endif
+                @elseif ($selectedTab === 'championship')
+                    @if (! $hasBracketThreshold)
+                        @include('admin.tournaments.partials.small-championship-tab', [
+                            'selectedTournament' => $selectedTournament,
+                            'canEnterScores' => $canEnterScores,
+                            'canCreateMatches' => $canCreateMatches,
+                            'isAdmin' => $isAdmin,
+                        ])
+                    @else
+                        <section class="rounded-xl border border-dashed border-neutral-300 bg-zinc-50 p-6 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-300">
+                            {{ __('Championship for this tournament size is reached through pooling and bracket generation. Switch to a small-tournament Day 2 knockout (fewer than :count teams) to manage Game 48 on this tab.', ['count' => $minimumBracketTeamCount]) }}
+                        </section>
+                    @endif
                 @endif
 
                 @include('admin.tournaments.partials.setup-add-pitch-modal', [
                     'tournament' => $selectedTournament,
                     'show' => $showPitchModal,
-                    'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover'], true) ? $selectedTab : 'crossover',
+                    'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover', 'games-dashboard', 'overview'], true) ? $selectedTab : 'games-dashboard',
                     'pitchAssignmentScorekeepers' => $pitchAssignmentScorekeepers,
                 ])
 
@@ -1221,7 +1145,7 @@
                     @include('admin.tournaments.partials.setup-edit-pitch-modal', [
                         'tournament' => $selectedTournament,
                         'pitch' => $pitch,
-                        'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover'], true) ? $selectedTab : 'crossover',
+                        'redirectTab' => in_array($selectedTab, ['round-robin', 'crossover', 'games-dashboard', 'overview'], true) ? $selectedTab : 'games-dashboard',
                         'pitchAssignmentScorekeepers' => $pitchAssignmentScorekeepers,
                     ])
                 @endforeach
@@ -1267,11 +1191,6 @@
                         'match' => $match,
                     ])
                 @endforeach
-
-                @include('admin.tournaments.partials.setup-add-crew-modal', [
-                    'tournament' => $selectedTournament,
-                    'show' => $showCrewModal,
-                ])
             @else
                 <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
                     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">

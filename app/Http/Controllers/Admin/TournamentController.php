@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\MatchPlayerStat;
 use App\Models\MatchScoreLog;
+use App\Models\MatchSpiritScore;
 use App\Models\Pitch;
 use App\Models\Team;
 use App\Models\TeamMember;
@@ -15,8 +16,12 @@ use App\Models\TournamentRegistration;
 use App\Models\User;
 use App\Services\BracketRankingService;
 use App\Support\BracketCodes;
+use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
+use App\Support\SmallFixedRoundRobinDayTwoSchedule;
+use App\Support\SmallTournamentTeamStanding;
 use App\Support\TournamentPooling;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -92,10 +97,6 @@ class TournamentController extends Controller
                 ->orderBy('scheduled_at')
                 ->orderBy('match_number')
                 ->orderBy('id'),
-            'crewMembers' => fn ($query) => $query
-                ->orderBy('category')
-                ->orderBy('sort_order')
-                ->orderBy('name'),
         ]);
 
         if ($selectedTournament !== null) {
@@ -110,7 +111,7 @@ class TournamentController extends Controller
                 return redirect()->route(
                     'admin.tournaments.index',
                     collect($request->query())
-                        ->put('tab', 'overview')
+                        ->put('tab', 'games-dashboard')
                         ->all(),
                 );
             }
@@ -122,9 +123,32 @@ class TournamentController extends Controller
                 return redirect()->route(
                     'admin.tournaments.index',
                     collect($request->query())
-                        ->put('tab', 'overview')
+                        ->put('tab', 'games-dashboard')
                         ->all(),
                 );
+            }
+
+            if (
+                $registrationCount < self::MINIMUM_BRACKET_TEAM_COUNT
+                && $normalizedTabForThreshold !== null
+                && in_array($normalizedTabForThreshold, ['quarter-final', 'championship'], true)
+            ) {
+                SmallDayTwoKnockoutBracket::sync($selectedTournament);
+                $selectedTournament->unsetRelation('matches');
+                $selectedTournament->load([
+                    'matches' => fn ($query) => $query
+                        ->with([
+                            'pitch',
+                            'pitchAssignedBy:id,name',
+                            'homeRegistration.team.members',
+                            'awayRegistration.team.members',
+                        ])
+                        ->withCount('scoreLogs')
+                        ->orderByRaw('case when scheduled_at is null then 1 else 0 end')
+                        ->orderBy('scheduled_at')
+                        ->orderBy('match_number')
+                        ->orderBy('id'),
+                ]);
             }
         }
 
@@ -204,7 +228,7 @@ class TournamentController extends Controller
         return redirect()
             ->route('admin.tournaments.index', [
                 'tournament' => $tournament->id,
-                'tab' => $this->resolveTournamentRedirectTab($request) ?? 'overview',
+                'tab' => $this->resolveTournamentRedirectTab($request) ?? 'games-dashboard',
             ])
             ->with('status', 'tournament-created');
     }
@@ -270,7 +294,153 @@ class TournamentController extends Controller
             'match' => $match,
             'memberDirectory' => $this->buildMatchMemberDirectory($match),
             'matchHasManualScorelineWithoutLog' => $this->matchHasManualScorelineWithoutLog($match),
+            'spiritScoresByScoredTeamId' => $match->spiritScores->keyBy('scored_team_id'),
         ]);
+    }
+
+    /**
+     * Persist spirit-of-the-game scoresheets for both teams (one row per scored team).
+     */
+    public function storeMatchSpiritScores(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        if ($match->status !== 'completed') {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withErrors([
+                    'spirit' => SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+                ]);
+        }
+
+        $match->loadMissing([
+            'homeRegistration.team.members',
+            'awayRegistration.team.members',
+        ]);
+
+        $homeTeam = $match->homeRegistration?->team;
+        $awayTeam = $match->awayRegistration?->team;
+
+        if (! $homeTeam || ! $awayTeam) {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withErrors(['spirit' => __('This match needs both registered teams before spirit scores can be saved.')]);
+        }
+
+        $scoreField = ['required', 'integer', Rule::in([1, 2, 3])];
+
+        $validated = $request->validate([
+            'spirit.home.knowledge_rules_score' => $scoreField,
+            'spirit.home.fouls_body_contact_score' => $scoreField,
+            'spirit.home.fair_mindedness_score' => $scoreField,
+            'spirit.home.positive_attitude_score' => $scoreField,
+            'spirit.home.communication_respect_score' => $scoreField,
+            'spirit.away.knowledge_rules_score' => $scoreField,
+            'spirit.away.fouls_body_contact_score' => $scoreField,
+            'spirit.away.fair_mindedness_score' => $scoreField,
+            'spirit.away.positive_attitude_score' => $scoreField,
+            'spirit.away.communication_respect_score' => $scoreField,
+            'spirit.home.notes' => ['nullable', 'string', 'max:1000'],
+            'spirit.away.notes' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        DB::transaction(function () use ($tournament, $match, $homeTeam, $awayTeam, $validated): void {
+            $this->upsertMatchSpiritScoreRecord(
+                $tournament,
+                $match,
+                $homeTeam,
+                $awayTeam,
+                $validated['spirit']['home'],
+                $this->spiritCaptainMember($homeTeam),
+            );
+
+            $this->upsertMatchSpiritScoreRecord(
+                $tournament,
+                $match,
+                $awayTeam,
+                $homeTeam,
+                $validated['spirit']['away'],
+                $this->spiritCaptainMember($awayTeam),
+            );
+        });
+
+        return redirect()
+            ->route('admin.tournaments.matches.scoring', [
+                'tournament' => $tournament,
+                'match' => $match,
+            ])
+            ->with('status', 'spirit-saved');
+    }
+
+    /**
+     * Download a printable PDF summary of match results (and spirit scores when saved).
+     */
+    public function exportMatchScoringPdf(Tournament $tournament, TournamentMatch $match)
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        $match = $this->loadMatchScoringContext($match);
+
+        $homeTeam = $match->homeRegistration?->team;
+        $awayTeam = $match->awayRegistration?->team;
+
+        $homePlayerStats = $match->playerStats
+            ->filter(fn ($stat) => $stat->teamMember?->team_id === $homeTeam?->id)
+            ->values();
+        $awayPlayerStats = $match->playerStats
+            ->filter(fn ($stat) => $stat->teamMember?->team_id === $awayTeam?->id)
+            ->values();
+
+        $spiritScoresByScoredTeamId = $match->spiritScores->keyBy('scored_team_id');
+        $includeSpiritPage = $match->spiritScores->isNotEmpty();
+
+        $matchStatusLabel = match ($match->status) {
+            'scheduled' => __('Upcoming'),
+            'live' => __('Live'),
+            'completed' => __('Completed'),
+            default => (string) str($match->status)->headline(),
+        };
+
+        $winnerLabel = null;
+        if ($match->status === 'completed'
+            && $match->home_score !== null
+            && $match->away_score !== null
+            && $homeTeam
+            && $awayTeam
+        ) {
+            if ((int) $match->home_score > (int) $match->away_score) {
+                $winnerLabel = $homeTeam->name;
+            } elseif ((int) $match->away_score > (int) $match->home_score) {
+                $winnerLabel = $awayTeam->name;
+            } else {
+                $winnerLabel = __('Draw');
+            }
+        }
+
+        $filename = sprintf('tournament-%d-match-%d-result.pdf', $tournament->id, $match->id);
+
+        $pdf = Pdf::loadView('admin.tournaments.matches.pdf', [
+            'tournament' => $tournament,
+            'match' => $match,
+            'homeTeam' => $homeTeam,
+            'awayTeam' => $awayTeam,
+            'homePlayerStats' => $homePlayerStats,
+            'awayPlayerStats' => $awayPlayerStats,
+            'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
+            'includeSpiritPage' => $includeSpiritPage,
+            'matchStatusLabel' => $matchStatusLabel,
+            'winnerLabel' => $winnerLabel,
+        ])
+            ->setPaper('a4', 'landscape')
+            ->setOption('isRemoteEnabled', false);
+
+        return $pdf->download($filename);
     }
 
     /**
@@ -491,6 +661,12 @@ class TournamentController extends Controller
             'home_score' => (int) $homeScore,
             'away_score' => (int) $awayScore,
         ])->save();
+
+        $match->loadMissing('tournament');
+        $tournament = $match->tournament;
+        if ($tournament !== null && $tournament->registrations()->count() < self::MINIMUM_BRACKET_TEAM_COUNT) {
+            SmallDayTwoKnockoutBracket::syncAfterResultChange($tournament, $match);
+        }
     }
 
     /**
@@ -1277,6 +1453,19 @@ class TournamentController extends Controller
      */
     public function generateQuarterFinalMatches(Request $request, Tournament $tournament): RedirectResponse
     {
+        if ($tournament->registrations()->count() < self::MINIMUM_BRACKET_TEAM_COUNT) {
+            $tab = $this->normalizeTournamentTab($request->string('redirect_tab')->toString()) ?? 'quarter-final';
+
+            return redirect()
+                ->route('admin.tournaments.index', [
+                    'tournament' => $tournament->id,
+                    'tab' => $tab,
+                ])
+                ->withErrors([
+                    'quarter_final' => __('Knockout for this size is managed on the Quarter Finals tab (Day 2 bracket). Pooling-based generation applies only once you reach :count teams.', ['count' => self::MINIMUM_BRACKET_TEAM_COUNT]),
+                ]);
+        }
+
         $crossoverMatches = TournamentMatch::query()
             ->where('tournament_id', $tournament->id)
             ->where('stage', 'crossover')
@@ -1288,6 +1477,18 @@ class TournamentController extends Controller
         $built = TournamentPooling::buildPoolingAssignments($tournament, $crossoverMatches);
 
         $tab = $this->normalizeTournamentTab($request->string('redirect_tab')->toString()) ?? 'quarter-final';
+
+        $roundRobinSchedule = SmallTournamentTeamStanding::roundRobinScheduleCompletion($tournament);
+        if ($roundRobinSchedule['total'] > 0 && ! $roundRobinSchedule['is_complete']) {
+            return redirect()
+                ->route('admin.tournaments.index', [
+                    'tournament' => $tournament->id,
+                    'tab' => $tab,
+                ])
+                ->withErrors([
+                    'quarter_final' => __('Finish every Round Robin game before generating Quarter Finals. Pairings use final standings once all pool games are complete.'),
+                ]);
+        }
 
         if (! TournamentPooling::poolingFinalizedForQuarterFinalGeneration($built)) {
             return redirect()
@@ -1880,6 +2081,9 @@ class TournamentController extends Controller
 
     /**
      * Persist the fixed Day 1 round robin grid (Pitch 1 & Pitch 2) for tournaments below the bracket threshold.
+     *
+     * Day 2 is upserted alongside Day 1 so the admin only needs one sync action; Day 2 failures surface
+     * as a separate error key so Day 1 remains useful even when the Day 2 roster is incomplete.
      */
     public function syncSmallDayOneRoundRobinSchedule(Request $request, Tournament $tournament): RedirectResponse
     {
@@ -1891,42 +2095,97 @@ class TournamentController extends Controller
                 ->withErrors(['small_day1_schedule' => $exception->getMessage()]);
         }
 
+        try {
+            SmallFixedRoundRobinDayTwoSchedule::sync($tournament);
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->with('status', 'small-day1-schedule-synced')
+                ->withErrors(['small_day2_schedule' => $exception->getMessage()]);
+        }
+
         return redirect()
             ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
             ->with('status', 'small-day1-schedule-synced');
     }
 
     /**
-     * Quick status changes from the small-tournament fixed Day 1 round robin table.
+     * Persist the fixed Day 2 round robin grid (Pitch 1 & Pitch 2) for tournaments below the bracket threshold.
+     */
+    public function syncSmallDayTwoRoundRobinSchedule(Request $request, Tournament $tournament): RedirectResponse
+    {
+        try {
+            SmallFixedRoundRobinDayTwoSchedule::sync($tournament);
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day2_schedule' => $exception->getMessage()]);
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day2-schedule-synced');
+    }
+
+    /**
+     * Quick status changes from the small-tournament fixed Day 1 round robin table,
+     * or from Day 2 knockout bracket matches (games 37–48) identified by {@see SmallDayTwoKnockoutBracket}.
      */
     public function updateRoundRobinMatchStatus(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
     {
         $this->ensureTournamentOwnsMatch($tournament, $match);
 
-        abort_unless($match->stage === 'round_robin', 404);
+        $belowBracketThreshold = $tournament->registrations()->count() < self::MINIMUM_BRACKET_TEAM_COUNT;
+        $isSmallKnockoutBracket = SmallDayTwoKnockoutBracket::isSmallDayTwoKnockoutScheduleRow($match);
 
-        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
-            return redirect()
-                ->route(
-                    $this->resolveTournamentRedirectRoute($request),
-                    $this->resolveTournamentRedirectParameters($request, $tournament),
-                )
-                ->withErrors(['status' => __('This quick status control is only available for tournaments below the bracket threshold.')]);
+        if ($isSmallKnockoutBracket) {
+            abort_unless($belowBracketThreshold, 404);
+        } else {
+            abort_unless($match->stage === 'round_robin', 404);
+
+            if (! $belowBracketThreshold) {
+                return redirect()
+                    ->route(
+                        $this->resolveTournamentRedirectRoute($request),
+                        $this->resolveTournamentRedirectParameters($request, $tournament),
+                    )
+                    ->withErrors(['status' => __('This quick status control is only available for tournaments below the bracket threshold.')]);
+            }
         }
 
+        $bracketStatuses = ['scheduled', 'live', 'completed'];
+        $roundRobinStatuses = ['scheduled', 'live', 'completed'];
+
         $validator = Validator::make($request->all(), [
-            'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+            'status' => [
+                'required',
+                Rule::in($isSmallKnockoutBracket ? $bracketStatuses : $roundRobinStatuses),
+            ],
         ]);
 
-        $validator->after(function ($validator) use ($request, $match): void {
+        $validator->after(function ($validator) use ($request, $match, $isSmallKnockoutBracket): void {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
             $status = $request->string('status')->toString();
 
             if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
                 $validator->errors()->add('status', __('Clear the scoring timeline before moving the match back to scheduled.'));
             }
 
-            if ($status === 'completed' && ($match->home_score === null || $match->away_score === null)) {
-                $validator->errors()->add('status', __('Completed matches must include both home and away scores.'));
+            if ($status === 'completed') {
+                $hasBothSides = $match->home_registration_id !== null && $match->away_registration_id !== null;
+                // Small Day 2 knockout cards (games 37–48, bracket marker) enter player-based scores only after the
+                // row is Completed — same bootstrap as quarter finals without a seeded scoreline. Requiring scores
+                // here blocks Ranking Path / placement games (41–42) and any fresh knockout row from ever opening scoring.
+                if ($hasBothSides && ($match->home_score === null || $match->away_score === null) && ! $isSmallKnockoutBracket) {
+                    $validator->errors()->add('status', __('Completed matches must include both home and away scores.'));
+                }
+
+                if (! $hasBothSides && ! $isSmallKnockoutBracket) {
+                    $validator->errors()->add('status', __('Assign both teams before marking this match completed.'));
+                }
             }
         });
 
@@ -1935,6 +2194,10 @@ class TournamentController extends Controller
         $match->update([
             'status' => $validated['status'],
         ]);
+
+        if ($isSmallKnockoutBracket) {
+            SmallDayTwoKnockoutBracket::syncAfterResultChange($tournament, $match);
+        }
 
         return redirect()
             ->route(
@@ -2012,6 +2275,99 @@ class TournamentController extends Controller
         $round = (int) $validated['round'];
         $status = $validated['status'];
         $gameNumbers = [($round * 2) - 1, $round * 2];
+
+        $matches = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('stage', 'round_robin')
+            ->whereIn('match_number', $gameNumbers)
+            ->where('notes', 'like', '%'.$markerPrefix.'%')
+            ->orderBy('match_number')
+            ->get();
+
+        DB::transaction(function () use ($matches, $status): void {
+            foreach ($matches as $match) {
+                $match->update(['status' => $status]);
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'match-status-updated');
+    }
+
+    /**
+     * Apply one status to both Pitch 1 & Pitch 2 games for a fixed Day 2 time-slot row (same round).
+     */
+    public function updateSmallDayTwoRoundRobinSlotStatus(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['status' => __('This row status control is only available for tournaments below the bracket threshold.')]);
+        }
+
+        $request->merge([
+            'status' => $this->normalizeSmallDayOneSlotStatusInput($request->string('status')->toString()),
+        ]);
+
+        $markerPrefix = SmallFixedRoundRobinDayTwoSchedule::MARKER_PREFIX;
+        $firstRound = SmallFixedRoundRobinDayTwoSchedule::FIRST_ROUND_NUMBER;
+        $lastRound = SmallFixedRoundRobinDayTwoSchedule::lastScheduledRoundNumber($tournament);
+        $firstGame = SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER;
+
+        $validator = Validator::make($request->all(), [
+            'round' => ['required', 'integer', 'min:'.$firstRound, 'max:'.max($firstRound, $lastRound)],
+            'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $tournament, $markerPrefix, $firstRound, $firstGame): void {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            $round = (int) $request->input('round');
+            $status = $request->string('status')->toString();
+            $slotIndex = $round - $firstRound;
+            $gameNumbers = [$firstGame + ($slotIndex * 2), $firstGame + ($slotIndex * 2) + 1];
+
+            $matches = TournamentMatch::query()
+                ->where('tournament_id', $tournament->id)
+                ->where('stage', 'round_robin')
+                ->whereIn('match_number', $gameNumbers)
+                ->where('notes', 'like', '%'.$markerPrefix.'%')
+                ->orderBy('match_number')
+                ->get();
+
+            if ($matches->isEmpty()) {
+                $validator->errors()->add('status', __('Sync the Day 2 schedule before setting row status.'));
+
+                return;
+            }
+
+            foreach ($matches as $match) {
+                if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
+                    $validator->errors()->add(
+                        'status',
+                        __('Clear the scoring timeline on game :num before moving this row back to upcoming.', ['num' => $match->match_number]),
+                    );
+
+                    return;
+                }
+            }
+        });
+
+        if ($validator->fails()) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($validator);
+        }
+
+        $validated = $validator->validated();
+
+        $round = (int) $validated['round'];
+        $status = $validated['status'];
+        $slotIndex = $round - $firstRound;
+        $gameNumbers = [$firstGame + ($slotIndex * 2), $firstGame + ($slotIndex * 2) + 1];
 
         $matches = TournamentMatch::query()
             ->where('tournament_id', $tournament->id)
@@ -2141,6 +2497,7 @@ class TournamentController extends Controller
             $field('event_type') => ['nullable', 'string', 'max:50'],
             $field('division') => ['nullable', 'string', 'max:50'],
             $field('surface') => ['nullable', 'string', 'max:50'],
+            $field('round_robin_advancing_count') => ['nullable', 'integer', 'min:1', 'max:255'],
             $field('info_labels') => ['nullable', 'array'],
             $field('info_labels.*') => ['nullable', 'string', 'max:120'],
             $field('info_values') => ['nullable', 'array'],
@@ -2185,6 +2542,9 @@ class TournamentController extends Controller
             'event_type' => $this->normalizeNullableString($validated[$field('event_type')] ?? null),
             'division' => $this->normalizeNullableString($validated[$field('division')] ?? null),
             'surface' => $this->normalizeNullableString($validated[$field('surface')] ?? null),
+            'round_robin_advancing_count' => isset($validated[$field('round_robin_advancing_count')]) && $validated[$field('round_robin_advancing_count')] !== null && $validated[$field('round_robin_advancing_count')] !== ''
+                ? max(1, min(255, (int) $validated[$field('round_robin_advancing_count')]))
+                : null,
             'info_items' => $this->compileInfoItems(
                 $validated[$field('info_labels')] ?? [],
                 $validated[$field('info_values')] ?? [],
@@ -2834,7 +3194,53 @@ class TournamentController extends Controller
                 ->orderByDesc('assists')
                 ->orderByDesc('blocks')
                 ->orderBy('id'),
+            'spiritScores',
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    protected function upsertMatchSpiritScoreRecord(
+        Tournament $tournament,
+        TournamentMatch $match,
+        Team $scoredTeam,
+        Team $scoringTeam,
+        array $input,
+        ?TeamMember $spiritCaptain,
+    ): void {
+        $knowledge = (int) $input['knowledge_rules_score'];
+        $fouls = (int) $input['fouls_body_contact_score'];
+        $fair = (int) $input['fair_mindedness_score'];
+        $attitude = (int) $input['positive_attitude_score'];
+        $communication = (int) $input['communication_respect_score'];
+        $total = $knowledge + $fouls + $fair + $attitude + $communication;
+
+        $notes = $this->normalizeNullableString($input['notes'] ?? null);
+
+        MatchSpiritScore::query()->updateOrCreate(
+            [
+                'match_id' => $match->id,
+                'scored_team_id' => $scoredTeam->id,
+            ],
+            [
+                'tournament_id' => $tournament->id,
+                'scoring_team_id' => $scoringTeam->id,
+                'spirit_captain_id' => $spiritCaptain?->id,
+                'knowledge_rules_score' => $knowledge,
+                'fouls_body_contact_score' => $fouls,
+                'fair_mindedness_score' => $fair,
+                'positive_attitude_score' => $attitude,
+                'communication_respect_score' => $communication,
+                'total_score' => $total,
+                'notes' => $notes,
+            ],
+        );
+    }
+
+    protected function spiritCaptainMember(?Team $team): ?TeamMember
+    {
+        return $team?->members?->firstWhere('role', 'spirit_captain');
     }
 
     /**
@@ -3122,7 +3528,17 @@ class TournamentController extends Controller
             return 'quarter-final';
         }
 
-        return in_array($tab, ['overview', 'round-robin', 'team-standing', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'crew', 'publish'], true)
+        // Legacy admin bookmarks for the removed Crew tab → Semi Finals.
+        if ($tab === 'crew' || $tab === 'event-crew') {
+            return 'semi-finals';
+        }
+
+        // Legacy Championship tab query param.
+        if ($tab === 'publish') {
+            return 'championship';
+        }
+
+        return in_array($tab, ['games-dashboard', 'overview', 'round-robin', 'team-standing', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'semi-finals', 'championship'], true)
             ? $tab
             : null;
     }

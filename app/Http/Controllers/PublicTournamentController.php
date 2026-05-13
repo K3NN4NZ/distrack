@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\MatchSpiritScore;
 use App\Models\Team;
 use App\Models\Tournament;
 use App\Models\TournamentMatch;
@@ -106,7 +107,7 @@ class PublicTournamentController extends Controller
                 ->orderBy('seed_number')
                 ->orderBy('id'),
             'matches' => fn ($query) => $query
-                ->with(['pitch', 'homeRegistration.team', 'awayRegistration.team', 'playerStats.teamMember.team'])
+                ->with(['pitch', 'homeRegistration.team', 'awayRegistration.team', 'playerStats.teamMember.team', 'spiritScores'])
                 ->orderByRaw('case when scheduled_at is null then 1 else 0 end')
                 ->orderBy('scheduled_at')
                 ->orderBy('match_number'),
@@ -422,6 +423,8 @@ class PublicTournamentController extends Controller
      */
     protected function buildSpiritDirectory(Tournament $tournament): Collection
     {
+        $tournament->loadMissing(['matches.spiritScores']);
+
         return $tournament->registrations
             ->map(function ($registration) use ($tournament): array {
                 $leaders = $registration->team->members
@@ -606,7 +609,8 @@ class PublicTournamentController extends Controller
     }
 
     /**
-     * Extract a public spirit-score breakdown from the match notes payload.
+     * Extract a public spirit-score breakdown from persisted {@see MatchSpiritScore} rows
+     * or legacy JSON embedded in {@see TournamentMatch::$notes}.
      *
      * The match notes may contain JSON with one of several common shapes, for example:
      * - {"spirit_scores":{"home_received":{...},"away_received":{...}}}
@@ -617,6 +621,30 @@ class PublicTournamentController extends Controller
      */
     protected function extractReceivedSpiritScore(TournamentMatch $match, bool $isHome): ?array
     {
+        $scoredTeamId = $isHome
+            ? $match->homeRegistration?->team_id
+            : $match->awayRegistration?->team_id;
+
+        if ($scoredTeamId) {
+            $record = $match->relationLoaded('spiritScores')
+                ? $match->spiritScores->firstWhere('scored_team_id', (int) $scoredTeamId)
+                : MatchSpiritScore::query()
+                    ->where('match_id', $match->id)
+                    ->where('scored_team_id', $scoredTeamId)
+                    ->first();
+
+            if ($record instanceof MatchSpiritScore) {
+                return [
+                    'rules' => $record->knowledge_rules_score,
+                    'fouls' => $record->fouls_body_contact_score,
+                    'fair' => $record->fair_mindedness_score,
+                    'attitude' => $record->positive_attitude_score,
+                    'communication' => $record->communication_respect_score,
+                    'total' => $record->total_score,
+                ];
+            }
+        }
+
         if (! filled($match->notes)) {
             return null;
         }
@@ -2088,6 +2116,7 @@ class PublicTournamentController extends Controller
             'scoreLogs' => fn ($query) => $query
                 ->with(['registration.team', 'scorer', 'assister'])
                 ->orderBy('sequence'),
+            'spiritScores',
         ]);
 
         $homeTeam = $match->homeRegistration?->team;

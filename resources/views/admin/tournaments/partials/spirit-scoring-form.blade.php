@@ -1,0 +1,229 @@
+@php
+    $homeSpirit = $homeTeam ? $spiritScoresByScoredTeamId->get($homeTeam->id) : null;
+    $awaySpirit = $awayTeam ? $spiritScoresByScoredTeamId->get($awayTeam->id) : null;
+    $homeSpiritCaptain = $homeTeam?->members?->firstWhere('role', 'spirit_captain');
+    $awaySpiritCaptain = $awayTeam?->members?->firstWhere('role', 'spirit_captain');
+
+    $criteriaRows = [
+        [
+            'field' => 'knowledge_rules_score',
+            'title' => __('Knowledge and Use of Rules'),
+            'lines' => [
+                __('3 - Excellent understanding and fair application of rules'),
+                __('2 - Average understanding, occasional disputes'),
+                __('1 - Poor rule knowledge and unsportsmanlike use of rules'),
+            ],
+        ],
+        [
+            'field' => 'fouls_body_contact_score',
+            'title' => __('Fouls and Body Contact'),
+            'lines' => [
+                __('3 - No dangerous plays, highly respectful gameplay'),
+                __('2 - Average level of contact'),
+                __('1 - Unsafe and unsportsmanlike behavior'),
+            ],
+        ],
+        [
+            'field' => 'fair_mindedness_score',
+            'title' => __('Fair Mindedness'),
+            'lines' => [
+                __('3 - Outstanding honesty and fairness'),
+                __('2 - Acceptable sportsmanship'),
+                __('1 - Poor sportsmanship and unfair behavior'),
+            ],
+        ],
+        [
+            'field' => 'positive_attitude_score',
+            'title' => __('Positive Attitude and Self-Control'),
+            'lines' => [
+                __('3 - Extremely positive and respectful throughout the game'),
+                __('2 - Average behavior'),
+                __('1 - Disrespectful or hostile conduct'),
+            ],
+        ],
+        [
+            'field' => 'communication_respect_score',
+            'title' => __('Communication and Respect'),
+            'lines' => [
+                __('3 - Excellent communication and mutual respect'),
+                __('2 - Average communication'),
+                __('1 - Disrespectful communication'),
+            ],
+        ],
+    ];
+@endphp
+
+<section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
+    <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Spirit Scoring') }}</h2>
+    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+        {{ __('Rate each team on the five criteria (1–3). Totals update automatically; maximum is 15.') }}
+    </p>
+
+    @php
+        $spiritErrorMessages = collect($errors->getMessages())
+            ->filter(fn (array $msgs, string $key): bool => str_starts_with($key, 'spirit.'))
+            ->flatten()
+            ->merge(
+                $errors->has('spirit')
+                    ? collect([$errors->first('spirit')])
+                    : collect(),
+            )
+            ->unique()
+            ->values();
+    @endphp
+
+    @if ($spiritErrorMessages->isNotEmpty())
+        <div class="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+            <ul class="list-inside list-disc space-y-1">
+                @foreach ($spiritErrorMessages as $message)
+                    <li>{{ $message }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    <form
+        method="POST"
+        action="{{ route('admin.tournaments.matches.scoring.spirit.store', ['tournament' => $tournament, 'match' => $match]) }}"
+        class="mt-6"
+    >
+        @csrf
+
+        <div class="grid gap-6 lg:grid-cols-2">
+            @foreach ([
+                'home' => [
+                    'team' => $homeTeam,
+                    'opponent' => $awayTeam,
+                    'record' => $homeSpirit,
+                    'captain' => $homeSpiritCaptain,
+                ],
+                'away' => [
+                    'team' => $awayTeam,
+                    'opponent' => $homeTeam,
+                    'record' => $awaySpirit,
+                    'captain' => $awaySpiritCaptain,
+                ],
+            ] as $sideKey => $side)
+                @php
+                    $team = $side['team'];
+                    $opponent = $side['opponent'];
+                    $record = $side['record'];
+                    $captain = $side['captain'];
+                @endphp
+
+                <div
+                    class="flex flex-col overflow-hidden rounded-xl border border-neutral-300 bg-zinc-50 shadow-sm dark:border-neutral-600 dark:bg-zinc-950"
+                    x-data="{
+                        knowledge_rules_score: @js(old('spirit.'.$sideKey.'.knowledge_rules_score', $record?->knowledge_rules_score ? (string) $record->knowledge_rules_score : '')),
+                        fouls_body_contact_score: @js(old('spirit.'.$sideKey.'.fouls_body_contact_score', $record?->fouls_body_contact_score ? (string) $record->fouls_body_contact_score : '')),
+                        fair_mindedness_score: @js(old('spirit.'.$sideKey.'.fair_mindedness_score', $record?->fair_mindedness_score ? (string) $record->fair_mindedness_score : '')),
+                        positive_attitude_score: @js(old('spirit.'.$sideKey.'.positive_attitude_score', $record?->positive_attitude_score ? (string) $record->positive_attitude_score : '')),
+                        communication_respect_score: @js(old('spirit.'.$sideKey.'.communication_respect_score', $record?->communication_respect_score ? (string) $record->communication_respect_score : '')),
+                        get spiritTotal() {
+                            const keys = ['knowledge_rules_score','fouls_body_contact_score','fair_mindedness_score','positive_attitude_score','communication_respect_score'];
+                            let sum = 0;
+                            let complete = true;
+                            for (const k of keys) {
+                                const v = this[k];
+                                if (v === '' || v === null) { complete = false; continue; }
+                                const n = Number(v);
+                                if (Number.isNaN(n)) { complete = false; continue; }
+                                sum += n;
+                            }
+                            return complete ? sum : '';
+                        },
+                    }"
+                >
+                    <div class="border-b border-neutral-300 bg-white px-4 py-3 text-center dark:border-neutral-600 dark:bg-zinc-900">
+                        <div class="text-xs font-bold uppercase tracking-[0.2em] text-zinc-700 dark:text-zinc-200">{{ __('Spirit Scoresheet') }}</div>
+                        <div class="mt-2 text-sm font-semibold text-zinc-900 dark:text-white">
+                            {{ $team?->name ?: __('Team') }} {{ __('vs.') }} {{ $opponent?->name ?: __('Opponent') }}
+                        </div>
+                        <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            {{ __('Game #:num', ['num' => $match->match_number ?? '—']) }}
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full border-collapse text-left text-sm">
+                            <thead>
+                                <tr class="border-b border-neutral-300 bg-white dark:border-neutral-600 dark:bg-zinc-900">
+                                    <th class="px-3 py-2 text-xs font-bold uppercase tracking-wide text-zinc-800 dark:text-zinc-100">{{ __('Criteria') }}</th>
+                                    <th class="w-24 px-2 py-2 text-center text-xs font-bold uppercase tracking-wide text-zinc-800 dark:text-zinc-100">{{ __('Score') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($criteriaRows as $row)
+                                    @php $field = $row['field']; @endphp
+                                    <tr class="border-b border-neutral-200 bg-white last:border-b-0 dark:border-neutral-700 dark:bg-zinc-900">
+                                        <td class="px-3 py-2 align-top text-zinc-800 dark:text-zinc-100">
+                                            <div class="font-medium">{{ $row['title'] }}</div>
+                                            <ul class="mt-1 list-none space-y-0.5 text-xs leading-snug text-zinc-600 dark:text-zinc-400">
+                                                @foreach ($row['lines'] as $line)
+                                                    <li>{{ $line }}</li>
+                                                @endforeach
+                                            </ul>
+                                        </td>
+                                        <td class="px-2 py-2 align-middle text-center">
+                                            @php
+                                                $currentScore = old('spirit.'.$sideKey.'.'.$field, $record?->{$field});
+                                            @endphp
+                                            <select
+                                                name="spirit[{{ $sideKey }}][{{ $field }}]"
+                                                x-model="{{ $field }}"
+                                                required
+                                                class="h-9 w-full max-w-[5.5rem] rounded-md border border-neutral-300 bg-white px-2 text-center text-sm font-medium text-zinc-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:border-neutral-600 dark:bg-zinc-950 dark:text-zinc-100"
+                                            >
+                                                <option value="" @selected($currentScore === null || $currentScore === '')>—</option>
+                                                @foreach ([1, 2, 3] as $opt)
+                                                    <option value="{{ $opt }}" @selected((string) $currentScore === (string) $opt)>{{ $opt }}</option>
+                                                @endforeach
+                                            </select>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                                <tr class="border-t-2 border-neutral-400 bg-zinc-100 font-semibold dark:border-neutral-500 dark:bg-zinc-800">
+                                    <td class="px-3 py-2 text-zinc-900 dark:text-white">{{ __('Total') }} <span class="text-xs font-normal text-zinc-500">({{ __('max 15') }})</span></td>
+                                    <td class="px-2 py-2 text-center text-base text-zinc-900 dark:text-white">
+                                        <span x-text="spiritTotal === '' ? '—' : spiritTotal"></span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="border-t border-neutral-300 bg-zinc-50 px-4 py-3 dark:border-neutral-600 dark:bg-zinc-950">
+                        <label class="block text-xs font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{{ __('Notes (optional)') }}</label>
+                        <textarea
+                            name="spirit[{{ $sideKey }}][notes]"
+                            rows="2"
+                            maxlength="1000"
+                            class="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-neutral-500 focus:outline-none dark:border-neutral-600 dark:bg-zinc-900 dark:text-zinc-100"
+                            placeholder="{{ __('Short comment…') }}"
+                        >{{ old('spirit.'.$sideKey.'.notes', $record?->notes) }}</textarea>
+                    </div>
+
+                    <div class="mt-auto border-t border-neutral-300 bg-white px-4 py-4 text-center dark:border-neutral-600 dark:bg-zinc-900">
+                        @if ($captain)
+                            <div class="text-base font-semibold text-zinc-900 dark:text-white">{{ $captain->name }}</div>
+                            <div class="mt-1 text-xs font-bold uppercase tracking-[0.15em] text-zinc-600 dark:text-zinc-300">{{ __('Spirit Captain') }}</div>
+                            <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Signature Above Printed Name') }}</div>
+                        @else
+                            <div class="text-sm text-zinc-600 dark:text-zinc-300">{{ __('No spirit captain assigned') }}</div>
+                            <div class="mt-1 text-xs font-bold uppercase tracking-[0.15em] text-zinc-500 dark:text-zinc-400">{{ __('Spirit Captain') }}</div>
+                        @endif
+                    </div>
+                </div>
+            @endforeach
+        </div>
+
+        <div class="mt-6 flex justify-end">
+            <button
+                type="submit"
+                class="inline-flex items-center justify-center rounded-lg bg-[#2f55b7] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2748a0] focus:outline-none focus:ring-2 focus:ring-[#2f55b7] focus:ring-offset-2 dark:focus:ring-offset-zinc-900"
+            >
+                {{ __('Save Spirit Scores') }}
+            </button>
+        </div>
+    </form>
+</section>

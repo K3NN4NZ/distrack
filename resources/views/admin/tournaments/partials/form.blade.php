@@ -595,6 +595,27 @@
         </label>
     </div>
 
+    <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            {{ __('Round robin advancing count') }}
+            <input
+                type="number"
+                name="{{ $fieldName('round_robin_advancing_count') }}"
+                min="1"
+                max="255"
+                value="{{ $fieldValue('round_robin_advancing_count') === '' || $fieldValue('round_robin_advancing_count') === null ? '' : $fieldValue('round_robin_advancing_count') }}"
+                class="mt-2 w-full max-w-xs rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+                placeholder="{{ __('Auto (from bracket)') }}"
+            >
+        </label>
+        <p class="mt-1 max-w-2xl text-xs text-zinc-500 dark:text-zinc-400">
+            {{ __('Leave blank to infer from playoff stages (e.g. quarter finals → top 8). Used for Team Standing cutoffs after round robin scores are complete.') }}
+        </p>
+        @error($fieldName('round_robin_advancing_count'))
+            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+        @enderror
+    </div>
+
     <div class="grid gap-4 md:grid-cols-2">
         <flux:input name="{{ $fieldName('ends_at') }}" :label="__('Ends At')" :value="$fieldValue('ends_at')" type="datetime-local" />
 

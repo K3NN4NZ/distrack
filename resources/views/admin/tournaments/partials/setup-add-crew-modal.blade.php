@@ -24,7 +24,7 @@
             <input type="hidden" name="tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="crew_tournament_id" value="{{ $tournament->id }}">
             <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-            <input type="hidden" name="redirect_tab" value="crew">
+            <input type="hidden" name="redirect_tab" value="semi-finals">
 
             <div class="grid gap-4 md:grid-cols-2">
                 <flux:input name="category" :label="__('Category')" :value="old('category', 'Tournament Admins')" type="text" required />

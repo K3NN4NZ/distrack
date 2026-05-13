@@ -68,11 +68,18 @@ final class SmallFixedRoundRobinDayOneSchedule
     /**
      * Explain why scoring endpoints stay closed until {@see TournamentMatch::$status} is {@code completed}.
      * Day 1 rows share one status across Pitch 1 and Pitch 2; both matches receive that status together.
+     * Day 2 rows share the same UX, so its marker is treated the same here without forcing a circular import.
      */
     public static function scoringRequiresCompletedScheduleMessage(TournamentMatch $match): string
     {
-        if (self::isTrackedMatch($match)) {
+        $notes = (string) ($match->notes ?? '');
+
+        if (self::isTrackedMatch($match) || str_contains($notes, SmallFixedRoundRobinDayTwoSchedule::MARKER_PREFIX)) {
             return __('Scoring is only available after this Round Robin row is marked Completed on the schedule.');
+        }
+
+        if (str_contains($notes, SmallDayTwoKnockoutBracket::MARKER_PREFIX)) {
+            return __('Scoring is only available after this bracket match is marked Completed on the schedule.');
         }
 
         return __('Scoring is only available after this match is marked Completed on the tournament schedule.');

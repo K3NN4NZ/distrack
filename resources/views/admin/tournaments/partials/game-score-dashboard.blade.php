@@ -1,4 +1,7 @@
 @php
+    use App\Support\AdminTournamentTabStatusPresentation;
+
+    $dashboardTab = $dashboardTab ?? null;
     $dashboardMatches = collect($matches ?? $selectedTournament->matches ?? [])
         ->sortBy([
             fn ($left, $right) => ($left->scheduled_at?->getTimestamp() ?? PHP_INT_MAX) <=> ($right->scheduled_at?->getTimestamp() ?? PHP_INT_MAX),
@@ -21,6 +24,9 @@
     $missingTeamsGames = $dashboardMatches
         ->filter(fn ($match): bool => ! $match->homeRegistration || ! $match->awayRegistration)
         ->count();
+
+    $primaryChips = AdminTournamentTabStatusPresentation::gameDashboardPrimaryStatusChips($dashboardTab);
+
     $statusCards = [
         [
             'label' => __('Total Games'),
@@ -29,35 +35,48 @@
             'tone' => 'border-neutral-200 bg-white dark:border-neutral-700 dark:bg-zinc-900',
             'filter' => 'all',
         ],
-        [
-            'label' => __('Scheduled'),
-            'count' => $scheduledGames,
-            'detail' => __('Not started yet'),
-            'tone' => 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950',
-            'filter' => 'scheduled',
-        ],
-        [
-            'label' => __('Live'),
-            'count' => $liveGames,
-            'detail' => __('Currently in play'),
-            'tone' => 'border-sky-200 bg-sky-50 dark:border-sky-900/70 dark:bg-sky-950/30',
-            'filter' => 'live',
-        ],
-        [
-            'label' => __('Completed'),
-            'count' => $completedGames,
-            'detail' => __('Scores can be reviewed'),
-            'tone' => 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/70 dark:bg-emerald-950/30',
-            'filter' => 'completed',
-        ],
-        [
+    ];
+
+    foreach ($primaryChips as $chip) {
+        $filter = $chip['filter'];
+        $count = match ($filter) {
+            'scheduled' => $scheduledGames,
+            'live' => $liveGames,
+            'completed' => $completedGames,
+            default => 0,
+        };
+        $detail = match ($filter) {
+            'scheduled' => __('Not started yet'),
+            'live' => __('Currently in play'),
+            'completed' => __('Scores can be reviewed'),
+            default => '',
+        };
+        $tone = match ($filter) {
+            'scheduled' => 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950',
+            'live' => 'border-sky-200 bg-sky-50 dark:border-sky-900/70 dark:bg-sky-950/30',
+            'completed' => 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/70 dark:bg-emerald-950/30',
+            default => 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950',
+        };
+        $statusCards[] = [
+            'label' => $chip['label'],
+            'count' => $count,
+            'detail' => $detail,
+            'tone' => $tone,
+            'filter' => $filter,
+        ];
+    }
+
+    if ($dashboardTab !== AdminTournamentTabStatusPresentation::TAB_QUARTER_FINAL) {
+        $statusCards[] = [
             'label' => __('Need Teams'),
             'count' => $missingTeamsGames,
             'detail' => __('Missing home or away team'),
             'tone' => 'border-amber-200 bg-amber-50 dark:border-amber-900/70 dark:bg-amber-950/30',
             'filter' => 'needs-teams',
-        ],
-    ];
+        ];
+    }
+
+    $isQuarterFinalDashboard = $dashboardTab === AdminTournamentTabStatusPresentation::TAB_QUARTER_FINAL;
 @endphp
 
 <section
@@ -90,7 +109,11 @@
         @endif
     </div>
 
-    <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div @class([
+        'mt-5 grid gap-3 sm:grid-cols-2',
+        'xl:grid-cols-5' => ! $isQuarterFinalDashboard,
+        'xl:grid-cols-4' => $isQuarterFinalDashboard,
+    ])>
         @foreach ($statusCards as $card)
             <button
                 type="button"
@@ -129,7 +152,10 @@
             @php
                 $homeName = $match->homeRegistration?->team?->name ?? __('TBD');
                 $awayName = $match->awayRegistration?->team?->name ?? __('TBD');
-                $statusLabel = str($match->status)->headline();
+                $statusLabel = AdminTournamentTabStatusPresentation::statusBadgeLabel(
+                    (string) $match->status,
+                    $dashboardTab,
+                );
                 $statusTone = match ($match->status) {
                     'completed' => 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300',
                     'live' => 'bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300',

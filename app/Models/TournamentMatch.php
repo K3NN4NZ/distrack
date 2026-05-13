@@ -102,6 +102,14 @@ class TournamentMatch extends Model
     }
 
     /**
+     * Spirit-of-the-game scoresheets (one row per team rated in this match).
+     */
+    public function spiritScores(): HasMany
+    {
+        return $this->hasMany(MatchSpiritScore::class, 'match_id');
+    }
+
+    /**
      * Next global game number for this tournament (highest existing match_number + 1).
      */
     public static function nextMatchNumberForTournament(int $tournamentId): int

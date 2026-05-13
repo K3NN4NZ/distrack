@@ -62,6 +62,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/{tournament}/matches/{match}/scoring', 'storeMatchScoreLog')->name('matches.scoring.store');
                 Route::delete('/{tournament}/matches/{match}/scoring/{scoreLog}', 'destroyMatchScoreLog')->name('matches.scoring.destroy');
                 Route::patch('/{tournament}/matches/{match}/scoring/player-stats', 'updateMatchPlayerStat')->name('matches.scoring.player-stats.update');
+                Route::post('/{tournament}/matches/{match}/scoring/spirit', 'storeMatchSpiritScores')->name('matches.scoring.spirit.store');
+                Route::get('/{tournament}/matches/{match}/pdf', 'exportMatchScoringPdf')->name('matches.pdf');
             });
 
             Route::middleware('can:access-admin')->group(function () {
@@ -78,6 +80,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
                 Route::post('/{tournament}/matches/small-day1-schedule/sync', 'syncSmallDayOneRoundRobinSchedule')->name('matches.small-day1-schedule.sync');
                 Route::patch('/{tournament}/matches/small-day1-slot-status', 'updateSmallDayOneRoundRobinSlotStatus')->name('matches.small-day1-slot-status.update');
+                Route::post('/{tournament}/matches/small-day2-schedule/sync', 'syncSmallDayTwoRoundRobinSchedule')->name('matches.small-day2-schedule.sync');
+                Route::patch('/{tournament}/matches/small-day2-slot-status', 'updateSmallDayTwoRoundRobinSlotStatus')->name('matches.small-day2-slot-status.update');
                 Route::patch('/{tournament}/matches/{match}/status', 'updateRoundRobinMatchStatus')->name('matches.status.update');
                 Route::post('/matches/crossover/generate', 'generateCrossoverSchedule')->name('matches.crossover.generate');
                 Route::post('/{tournament}/matches/quarter-finals/generate', 'generateQuarterFinalMatches')->name('matches.quarter-finals.generate');
