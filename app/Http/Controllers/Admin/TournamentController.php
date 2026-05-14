@@ -21,7 +21,9 @@ use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallFixedRoundRobinDayTwoSchedule;
 use App\Support\SmallTournamentTeamStanding;
 use App\Support\TournamentPooling;
+use App\Support\TournamentReportBuilder;
 use Barryvdh\DomPDF\Facade\Pdf;
+use iio\libmergepdf\Merger;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -186,6 +188,11 @@ class TournamentController extends Controller
                 ->get(['id', 'name'])
             : collect();
 
+        $tournamentReport = null;
+        if ($selectedTournament && $this->normalizeTournamentTab($request->string('tab')->toString()) === 'report') {
+            $tournamentReport = app(TournamentReportBuilder::class)->build($selectedTournament);
+        }
+
         return view('admin.tournaments.index', [
             'selectedTournament' => $selectedTournament,
             'availableTeams' => $availableTeams,
@@ -193,6 +200,7 @@ class TournamentController extends Controller
             'bracketRankingPreview' => $bracketRankingPreview,
             'scorekeeperPitchManagedMatches' => $scorekeeperPitchManagedMatches,
             'pitchAssignmentScorekeepers' => $pitchAssignmentScorekeepers,
+            'tournamentReport' => $tournamentReport,
         ]);
     }
 
@@ -379,9 +387,119 @@ class TournamentController extends Controller
     }
 
     /**
-     * Download a printable PDF summary of match results (and spirit scores when saved).
+     * Auto-save spirit scores for a single team (JSON). Used by the scoring page debounced fetch.
      */
-    public function exportMatchScoringPdf(Tournament $tournament, TournamentMatch $match)
+    public function patchMatchSpiritScores(Request $request, Tournament $tournament, TournamentMatch $match): JsonResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        if ($match->status !== 'completed') {
+            return response()->json([
+                'success' => false,
+                'message' => SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+            ], 422);
+        }
+
+        $match->loadMissing([
+            'homeRegistration.team.members',
+            'awayRegistration.team.members',
+        ]);
+
+        $homeTeam = $match->homeRegistration?->team;
+        $awayTeam = $match->awayRegistration?->team;
+
+        if (! $homeTeam || ! $awayTeam) {
+            return response()->json([
+                'success' => false,
+                'message' => __('This match needs both registered teams before spirit scores can be saved.'),
+            ], 422);
+        }
+
+        $criterionRule = ['nullable', 'integer', Rule::in([1, 2, 3])];
+
+        try {
+            $validated = $request->validate([
+                'scored_team_id' => ['required', 'integer', Rule::in([$homeTeam->id, $awayTeam->id])],
+                'scoring_team_id' => ['required', 'integer', Rule::in([$homeTeam->id, $awayTeam->id])],
+                'knowledge_rules_score' => $criterionRule,
+                'fouls_body_contact_score' => $criterionRule,
+                'fair_mindedness_score' => $criterionRule,
+                'positive_attitude_score' => $criterionRule,
+                'communication_respect_score' => $criterionRule,
+                'notes' => ['nullable', 'string', 'max:1000'],
+            ]);
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => __('Error saving'),
+                'errors' => $exception->errors(),
+            ], 422);
+        }
+
+        $scoredTeamId = (int) $validated['scored_team_id'];
+        $scoringTeamId = (int) $validated['scoring_team_id'];
+        $expectedScoringTeamId = $scoredTeamId === $homeTeam->id ? $awayTeam->id : $homeTeam->id;
+
+        if ($scoringTeamId !== $expectedScoringTeamId) {
+            return response()->json([
+                'success' => false,
+                'message' => __('Invalid spirit score pairing for this match.'),
+            ], 422);
+        }
+
+        $scoredTeam = $scoredTeamId === $homeTeam->id ? $homeTeam : $awayTeam;
+        $scoringTeam = $scoringTeamId === $homeTeam->id ? $homeTeam : $awayTeam;
+
+        $payload = collect($validated)
+            ->only([
+                'knowledge_rules_score',
+                'fouls_body_contact_score',
+                'fair_mindedness_score',
+                'positive_attitude_score',
+                'communication_respect_score',
+                'notes',
+            ])
+            ->all();
+
+        $record = DB::transaction(function () use ($tournament, $match, $scoredTeam, $scoringTeam, $payload): ?MatchSpiritScore {
+            return $this->upsertMatchSpiritScoreRecord(
+                $tournament,
+                $match,
+                $scoredTeam,
+                $scoringTeam,
+                $payload,
+                $this->spiritCaptainMember($scoredTeam),
+            );
+        });
+
+        $match->unsetRelation('spiritScores');
+        $match->load('spiritScores');
+
+        return response()->json([
+            'success' => true,
+            'message' => __('Saved'),
+            'total_score' => $record?->total_score,
+            'criteria' => $record ? [
+                'knowledge_rules_score' => $record->knowledge_rules_score,
+                'fouls_body_contact_score' => $record->fouls_body_contact_score,
+                'fair_mindedness_score' => $record->fair_mindedness_score,
+                'positive_attitude_score' => $record->positive_attitude_score,
+                'communication_respect_score' => $record->communication_respect_score,
+            ] : null,
+        ]);
+    }
+
+    /**
+     * Stream a printable match PDF (game score + spirit scoresheet) for any tournament match.
+     *
+     * Completed games append a spirit scoresheet page only when spirit criteria have been entered.
+     * Non-completed games always append the spirit scoresheet template after the match sheet; both sheets
+     * omit saved numeric scores in the PDF (printable blank templates — database values are unchanged).
+     *
+     * Uses A4 landscape with two cut-out panels per page, and the same layout for all stages (round robin,
+     * knockout, placement, etc.) and all match IDs — there is no per-stage or per-match Blade branch here.
+     */
+    public function exportMatchScoringPdf(Request $request, Tournament $tournament, TournamentMatch $match)
     {
         $this->ensureTournamentOwnsMatch($tournament, $match);
 
@@ -398,17 +516,24 @@ class TournamentController extends Controller
             ->values();
 
         $spiritScoresByScoredTeamId = $match->spiritScores->keyBy('scored_team_id');
-        $includeSpiritPage = $match->spiritScores->isNotEmpty();
+        $hasSpiritScoreData = $spiritScoresByScoredTeamId->contains(
+            fn (MatchSpiritScore $row): bool => $this->matchSpiritScoreRowHasData($row),
+        );
+        $mergeSpiritPortrait = ! $match->isCompletedMatchStatus() || $hasSpiritScoreData;
 
-        $matchStatusLabel = match ($match->status) {
-            'scheduled' => __('Upcoming'),
-            'live' => __('Live'),
+        $normalizedStatus = strtolower((string) $match->status);
+
+        $matchStatusLabel = match ($normalizedStatus) {
+            'scheduled', 'upcoming', 'pending' => __('Upcoming'),
+            'live', 'in_progress' => __('Live'),
             'completed' => __('Completed'),
             default => (string) str($match->status)->headline(),
         };
 
+        $isCompleted = $match->isCompletedMatchStatus();
+
         $winnerLabel = null;
-        if ($match->status === 'completed'
+        if ($isCompleted
             && $match->home_score !== null
             && $match->away_score !== null
             && $homeTeam
@@ -423,22 +548,93 @@ class TournamentController extends Controller
             }
         }
 
-        $filename = sprintf('tournament-%d-match-%d-result.pdf', $tournament->id, $match->id);
-
-        $pdf = Pdf::loadView('admin.tournaments.matches.pdf', [
+        $gamePdf = Pdf::loadView('admin.tournaments.matches.pdf', [
             'tournament' => $tournament,
             'match' => $match,
             'homeTeam' => $homeTeam,
             'awayTeam' => $awayTeam,
             'homePlayerStats' => $homePlayerStats,
             'awayPlayerStats' => $awayPlayerStats,
-            'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
-            'includeSpiritPage' => $includeSpiritPage,
             'matchStatusLabel' => $matchStatusLabel,
             'winnerLabel' => $winnerLabel,
-        ])
-            ->setPaper('a4', 'landscape')
-            ->setOption('isRemoteEnabled', false);
+            'isCompleted' => $isCompleted,
+        ]);
+        $gamePdf->setPaper('a4', 'landscape');
+        $gamePdf->setOption('isRemoteEnabled', true);
+
+        $gameBinary = $gamePdf->output();
+
+        if ($mergeSpiritPortrait) {
+            $spiritPdf = Pdf::loadView('admin.tournaments.matches.spirit-pdf', [
+                'tournament' => $tournament,
+                'match' => $match,
+                'homeTeam' => $homeTeam,
+                'awayTeam' => $awayTeam,
+                'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
+                'matchStatusLabel' => $matchStatusLabel,
+                'isCompleted' => $isCompleted,
+            ]);
+            $spiritPdf->setPaper('a4', 'landscape');
+            $spiritPdf->setOption('isRemoteEnabled', true);
+
+            $merger = new Merger;
+            $merger->addRaw($gameBinary);
+            $merger->addRaw($spiritPdf->output());
+            $binary = $merger->merge();
+        } else {
+            $binary = $gameBinary;
+        }
+
+        $filename = 'match-'.(filled($match->match_number) ? $match->match_number : $match->id).'-score.pdf';
+        $disposition = $request->boolean('preview')
+            ? 'inline; filename="'.$filename.'"'
+            : 'attachment; filename="'.$filename.'"';
+
+        return response($binary, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => $disposition,
+        ]);
+    }
+
+    /**
+     * Download a spirit-only PDF (scoresheet) for the match when {@see MatchSpiritScore} rows exist.
+     */
+    public function exportMatchSpiritScoringPdf(Tournament $tournament, TournamentMatch $match)
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        $match = $this->loadMatchScoringContext($match);
+
+        if ($match->spiritScores->filter(fn (MatchSpiritScore $row): bool => $this->matchSpiritScoreRowHasData($row))->isEmpty()) {
+            abort(404, __('No spirit scores available yet.'));
+        }
+
+        $homeTeam = $match->homeRegistration?->team;
+        $awayTeam = $match->awayRegistration?->team;
+
+        $spiritScoresByScoredTeamId = $match->spiritScores->keyBy('scored_team_id');
+
+        $normalizedStatus = strtolower((string) $match->status);
+        $matchStatusLabel = match ($normalizedStatus) {
+            'scheduled', 'upcoming', 'pending' => __('Upcoming'),
+            'live', 'in_progress' => __('Live'),
+            'completed' => __('Completed'),
+            default => (string) str($match->status)->headline(),
+        };
+
+        $filename = sprintf('tournament-%d-match-%d-spirit-score.pdf', $tournament->id, $match->id);
+
+        $pdf = Pdf::loadView('admin.tournaments.matches.spirit-pdf', [
+            'tournament' => $tournament,
+            'match' => $match,
+            'homeTeam' => $homeTeam,
+            'awayTeam' => $awayTeam,
+            'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
+            'matchStatusLabel' => $matchStatusLabel,
+            'isCompleted' => $match->isCompletedMatchStatus(),
+        ]);
+        $pdf->setPaper('a4', 'landscape');
+        $pdf->setOption('isRemoteEnabled', true);
 
         return $pdf->download($filename);
     }
@@ -3208,17 +3404,46 @@ class TournamentController extends Controller
         Team $scoringTeam,
         array $input,
         ?TeamMember $spiritCaptain,
-    ): void {
-        $knowledge = (int) $input['knowledge_rules_score'];
-        $fouls = (int) $input['fouls_body_contact_score'];
-        $fair = (int) $input['fair_mindedness_score'];
-        $attitude = (int) $input['positive_attitude_score'];
-        $communication = (int) $input['communication_respect_score'];
-        $total = $knowledge + $fouls + $fair + $attitude + $communication;
+    ): ?MatchSpiritScore {
+        $criteriaKeys = [
+            'knowledge_rules_score',
+            'fouls_body_contact_score',
+            'fair_mindedness_score',
+            'positive_attitude_score',
+            'communication_respect_score',
+        ];
+
+        $criteria = [];
+        foreach ($criteriaKeys as $key) {
+            if (! array_key_exists($key, $input)) {
+                throw new InvalidArgumentException("Missing spirit criterion: {$key}");
+            }
+
+            $raw = $input[$key];
+            if ($raw === '' || $raw === null) {
+                $criteria[$key] = null;
+            } else {
+                $criteria[$key] = (int) $raw;
+            }
+        }
+
+        $hasAny = collect($criteria)->contains(fn ($value) => $value !== null);
+
+        $query = MatchSpiritScore::query()
+            ->where('match_id', $match->id)
+            ->where('scored_team_id', $scoredTeam->id);
+
+        if (! $hasAny) {
+            $query->delete();
+
+            return null;
+        }
+
+        $total = array_sum(array_values(array_filter($criteria, fn ($value) => $value !== null)));
 
         $notes = $this->normalizeNullableString($input['notes'] ?? null);
 
-        MatchSpiritScore::query()->updateOrCreate(
+        return MatchSpiritScore::query()->updateOrCreate(
             [
                 'match_id' => $match->id,
                 'scored_team_id' => $scoredTeam->id,
@@ -3227,15 +3452,20 @@ class TournamentController extends Controller
                 'tournament_id' => $tournament->id,
                 'scoring_team_id' => $scoringTeam->id,
                 'spirit_captain_id' => $spiritCaptain?->id,
-                'knowledge_rules_score' => $knowledge,
-                'fouls_body_contact_score' => $fouls,
-                'fair_mindedness_score' => $fair,
-                'positive_attitude_score' => $attitude,
-                'communication_respect_score' => $communication,
+                ...$criteria,
                 'total_score' => $total,
                 'notes' => $notes,
             ],
         );
+    }
+
+    protected function matchSpiritScoreRowHasData(MatchSpiritScore $row): bool
+    {
+        return $row->knowledge_rules_score !== null
+            || $row->fouls_body_contact_score !== null
+            || $row->fair_mindedness_score !== null
+            || $row->positive_attitude_score !== null
+            || $row->communication_respect_score !== null;
     }
 
     protected function spiritCaptainMember(?Team $team): ?TeamMember
@@ -3538,7 +3768,7 @@ class TournamentController extends Controller
             return 'championship';
         }
 
-        return in_array($tab, ['games-dashboard', 'overview', 'round-robin', 'team-standing', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'semi-finals', 'championship'], true)
+        return in_array($tab, ['games-dashboard', 'overview', 'round-robin', 'team-standing', 'bracket-ranking', 'crossover', 'pooling', 'quarter-final', 'semi-finals', 'championship', 'report'], true)
             ? $tab
             : null;
     }

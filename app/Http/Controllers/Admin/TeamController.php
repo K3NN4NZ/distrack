@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Team;
 use App\Models\TeamMember;
+use App\Models\Tournament;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -17,32 +18,78 @@ use Illuminate\View\View;
 class TeamController extends Controller
 {
     /**
-     * Show all teams to administrator accounts.
+     * Admin teams list with search and optional tournament filter.
      */
     public function index(Request $request): View
     {
-        $teams = Team::query()
+        $query = Team::query()
             ->with([
-                'members' => fn ($query) => $query
+                'members' => fn ($q) => $q
                     ->whereIn('role', ['captain', 'spirit_captain'])
                     ->orderByRaw("case when role = 'captain' then 0 when role = 'spirit_captain' then 1 else 2 end"),
             ])
             ->withCount(['members', 'registrations'])
             ->withExists([
-                'members as members_with_match_stats' => fn ($query) => $query->whereHas('matchStats'),
+                'members as members_with_match_stats' => fn ($q) => $q->whereHas('matchStats'),
             ])
-            ->latest()
-            ->get();
+            ->latest();
+
+        if ($search = trim((string) $request->query('q', ''))) {
+            $query->where(function ($q) use ($search): void {
+                $q->where('name', 'like', '%'.$search.'%')
+                    ->orWhere('short_name', 'like', '%'.$search.'%');
+            });
+        }
+
+        if ($request->filled('tournament_id')) {
+            $tournamentId = $request->integer('tournament_id');
+            $query->whereHas('registrations', fn ($q) => $q->where('tournament_id', $tournamentId));
+        }
+
+        $teams = $query->get();
 
         $totalRosterCount = TeamMember::query()->count();
 
         $selectedTeam = $teams->firstWhere('id', $request->integer('selected_team'))
             ?? $teams->first();
 
+        $tournaments = Tournament::query()
+            ->orderByDesc('id')
+            ->limit(200)
+            ->get(['id', 'name']);
+
         return view('admin.teams.index', [
             'teams' => $teams,
             'selectedTeam' => $selectedTeam,
             'totalRosterCount' => $totalRosterCount,
+            'tournaments' => $tournaments,
+            'filters' => [
+                'q' => $request->query('q', ''),
+                'tournament_id' => $request->query('tournament_id'),
+            ],
+        ]);
+    }
+
+    public function show(Team $team): View
+    {
+        $team->load(['members' => fn ($q) => $q->orderBy('name')]);
+
+        $male = $team->members->filter(fn (TeamMember $m) => strtolower((string) $m->gender) === 'male')->values();
+        $female = $team->members->filter(fn (TeamMember $m) => strtolower((string) $m->gender) === 'female')->values();
+        $other = $team->members->filter(fn (TeamMember $m) => ! in_array(strtolower((string) $m->gender), ['male', 'female'], true))->values();
+
+        return view('admin.teams.show', [
+            'team' => $team,
+            'maleMembers' => $male,
+            'femaleMembers' => $female,
+            'otherMembers' => $other,
+        ]);
+    }
+
+    public function edit(Team $team): View
+    {
+        return view('admin.teams.edit', [
+            'team' => $team,
         ]);
     }
 
@@ -68,13 +115,19 @@ class TeamController extends Controller
     }
 
     /**
-     * Update a team from the admin directory.
+     * Update a team from the admin directory or edit page.
      */
     public function update(Request $request, Team $team): RedirectResponse
     {
         $validated = $request->validate($this->teamRules('edit_'));
 
         $team->update($this->buildTeamPayload($request, $validated, $team, 'edit_'));
+
+        if ($request->boolean('from_edit_page')) {
+            return redirect()
+                ->route('admin.teams.show', $team)
+                ->with('status', 'team-updated');
+        }
 
         return redirect()
             ->route('admin.teams.index', ['selected_team' => $team->id])
@@ -109,14 +162,18 @@ class TeamController extends Controller
     {
         $field = fn (string $name): string => $prefix.$name;
 
+        $logoRule = ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'];
+
         return [
             $field('name') => ['required', 'string', 'max:255'],
+            $field('short_name') => ['nullable', 'string', 'max:64'],
+            $field('description') => ['nullable', 'string', 'max:5000'],
             $field('address') => ['required', 'string', 'max:500'],
             $field('city') => ['required', 'string', 'max:255'],
             $field('province') => ['required', 'string', 'max:255'],
             $field('country_name') => ['nullable', 'string', 'max:255'],
             $field('status') => ['required', Rule::in(['active', 'inactive', 'archived'])],
-            $field('logo') => ['nullable', Rule::imageFile(allowSvg: true)->max(2048)],
+            $field('logo') => $logoRule,
             $field('remove_logo') => ['nullable', 'boolean'],
             ...($prefix === '' ? [
                 'captain_name' => ['required', 'string', 'max:255'],
@@ -148,6 +205,8 @@ class TeamController extends Controller
         return [
             'owner_user_id' => $ownerUserId ?? $team?->owner_user_id,
             'name' => trim((string) $validated[$field('name')]),
+            'short_name' => $this->normalizeNullableString($validated[$field('short_name')] ?? null),
+            'description' => $this->normalizeNullableString($validated[$field('description')] ?? null),
             'address' => trim((string) $validated[$field('address')]),
             'city' => trim((string) $validated[$field('city')]),
             'province' => trim((string) $validated[$field('province')]),

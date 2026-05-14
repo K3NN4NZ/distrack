@@ -887,13 +887,14 @@
 
                 <div class="mt-5 overflow-hidden rounded-[1rem] border border-zinc-200 bg-white">
                     <div class="overflow-x-auto">
-                        <div class="min-w-[44rem]">
-                            <div class="grid grid-cols-[5rem_minmax(0,1.55fr)_5.75rem_5.75rem_5.75rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-900">
+                        <div class="min-w-[52rem]">
+                            <div class="grid grid-cols-[5rem_minmax(0,1.35fr)_4rem_4rem_4.25rem_4.5rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-900">
                                 <div>Rank</div>
                                 <div>Name</div>
                                 <div class="text-center">Goals</div>
                                 <div class="text-center">Asst.</div>
-                                <div class="text-center">Total</div>
+                                <div class="text-center">Blocks</div>
+                                <div class="text-center">Total O</div>
                             </div>
 
                             @forelse ($statsLeaderboard as $player)
@@ -906,7 +907,7 @@
                                     };
                                 @endphp
 
-                                <div class="grid grid-cols-[5rem_minmax(0,1.55fr)_5.75rem_5.75rem_5.75rem] items-center gap-3 border-b border-zinc-200 px-5 py-4 last:border-b-0">
+                                <div class="grid grid-cols-[5rem_minmax(0,1.35fr)_4rem_4rem_4.25rem_4.5rem] items-center gap-3 border-b border-zinc-200 px-5 py-4 last:border-b-0">
                                     <div class="text-center text-2xl font-medium text-zinc-900">
                                         @if ($player['rank'] <= 3)
                                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full text-xl font-medium {{ $rankBadgeClasses }}">
@@ -928,6 +929,7 @@
 
                                     <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['goals'] }}</div>
                                     <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['assists'] }}</div>
+                                    <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['blocks'] }}</div>
                                     <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['total_offense'] }}</div>
                                 </div>
                             @empty

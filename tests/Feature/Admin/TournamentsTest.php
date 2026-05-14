@@ -165,6 +165,8 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertSee('Semi Finals')
         ->assertSee('Championship')
         ->assertSee('tab=championship', false)
+        ->assertSee('Report')
+        ->assertSee('tab=report', false)
         ->assertDontSee('tab=publish', false)
         ->assertDontSee('tab=event-crew', false)
         ->assertDontSee('tab=crew', false)
@@ -179,6 +181,17 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertOk()
         ->assertSee('Games Dashboard')
         ->assertSee('Total Games');
+
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'report']))
+        ->assertOk()
+        ->assertSee('Print Report', false)
+        ->assertSee('Tournament Result', false)
+        ->assertSee('report_generation_header_logo.png', false)
+        ->assertSee('Team Awards', false)
+        ->assertSee('Individual Awards', false)
+        ->assertSee('Prepared by:', false)
+        ->assertSee('MARY ANTONNETTE S. RAMBONANZA', false)
+        ->assertSee('MISO Personnel', false);
 });
 
 test('team standing tab shows seeded rows for tournaments below bracket workflow threshold', function () {
@@ -4091,7 +4104,133 @@ test('scorekeepers can save spirit scores for a completed match', function () {
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
         ->assertSee('Spirit Scoring', false)
-        ->assertSee('Sam Spirit Home', false);
+        ->assertSee('Sam Spirit Home', false)
+        ->assertSee('Auto-save', false)
+        ->assertDontSee('Save Spirit Scores', false);
+});
+
+test('scorekeepers can auto-save partial spirit scores via JSON patch', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Spirit Patch Cup',
+        'slug' => 'spirit-patch-cup',
+        'venue' => 'Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Patch Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Patch Away',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 8,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'completed',
+        'home_score' => 5,
+        'away_score' => 4,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Patch Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $this->actingAs($scorekeeper);
+
+    $patchUrl = route('admin.tournaments.matches.scoring.spirit-scores.patch', ['tournament' => $tournament, 'match' => $match]);
+
+    $this->patchJson($patchUrl, [
+        'scored_team_id' => $homeTeam->id,
+        'scoring_team_id' => $awayTeam->id,
+        'knowledge_rules_score' => 3,
+        'fouls_body_contact_score' => 2,
+        'fair_mindedness_score' => null,
+        'positive_attitude_score' => null,
+        'communication_respect_score' => null,
+        'notes' => 'partial',
+    ])
+        ->assertOk()
+        ->assertJson([
+            'success' => true,
+            'total_score' => 5,
+        ]);
+
+    $row = MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $homeTeam->id)->first();
+    expect($row)->not->toBeNull();
+    expect($row->knowledge_rules_score)->toBe(3);
+    expect($row->fouls_body_contact_score)->toBe(2);
+    expect($row->fair_mindedness_score)->toBeNull();
+    expect($row->total_score)->toBe(5);
+    expect($row->notes)->toBe('partial');
+
+    $this->patchJson($patchUrl, [
+        'scored_team_id' => $homeTeam->id,
+        'scoring_team_id' => $awayTeam->id,
+        'knowledge_rules_score' => 3,
+        'fouls_body_contact_score' => 2,
+        'fair_mindedness_score' => 3,
+        'positive_attitude_score' => 3,
+        'communication_respect_score' => 3,
+        'notes' => 'full',
+    ])
+        ->assertOk()
+        ->assertJsonPath('total_score', 14);
+
+    $row->refresh();
+    expect($row->total_score)->toBe(14);
+    expect($row->notes)->toBe('full');
+
+    $this->patchJson($patchUrl, [
+        'scored_team_id' => $homeTeam->id,
+        'scoring_team_id' => $awayTeam->id,
+        'knowledge_rules_score' => null,
+        'fouls_body_contact_score' => null,
+        'fair_mindedness_score' => null,
+        'positive_attitude_score' => null,
+        'communication_respect_score' => null,
+        'notes' => null,
+    ])->assertOk()->assertJsonPath('total_score', null);
+
+    expect(MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $homeTeam->id)->exists())->toBeFalse();
 });
 
 test('scorekeepers can download a match scoring PDF', function () {
@@ -4172,14 +4311,43 @@ test('scorekeepers can download a match scoring PDF', function () {
 
     $homeTeam->load('members');
     $pdfScoreTableHtml = view('admin.tournaments.matches.partials.pdf-score-table', [
+        'tournament' => $tournament,
+        'match' => $match,
+        'homeTeam' => $homeTeam,
+        'awayTeam' => $awayTeam,
+        'matchStatusLabel' => __('Completed'),
+        'winnerLabel' => $homeTeam->name,
         'team' => $homeTeam,
         'playerStats' => collect(),
         'totalScore' => 10,
         'side' => 'home',
+        'isCompleted' => true,
     ])->render();
     expect($pdfScoreTableHtml)->toContain('class="score-table"')
-        ->and($pdfScoreTableHtml)->toContain('class="col-number"')
-        ->and($pdfScoreTableHtml)->toContain('gender-row');
+        ->and($pdfScoreTableHtml)->toContain('class="sheet-header"')
+        ->and($pdfScoreTableHtml)->toContain('class="sheet-logo-wrap"')
+        ->and($pdfScoreTableHtml)->toContain('class="sheet-header-logo"')
+        ->and($pdfScoreTableHtml)->toContain('images/report_generation_header_logo.png')
+        ->and($pdfScoreTableHtml)->toContain('class="sheet-title-line"')
+        ->and($pdfScoreTableHtml)->toContain($tournament->name)
+        ->and($pdfScoreTableHtml)->toContain('width: 7%;')
+        ->and($pdfScoreTableHtml)->toContain('gender-row')
+        ->and($pdfScoreTableHtml)->toContain('<div class="total-number">10</div>');
+
+    $blankPdfScoreTableHtml = view('admin.tournaments.matches.partials.pdf-score-table', [
+        'tournament' => $tournament,
+        'match' => $match,
+        'homeTeam' => $homeTeam,
+        'awayTeam' => $awayTeam,
+        'matchStatusLabel' => __('Upcoming'),
+        'winnerLabel' => null,
+        'team' => $homeTeam,
+        'playerStats' => collect(),
+        'totalScore' => 10,
+        'side' => 'home',
+        'isCompleted' => false,
+    ])->render();
+    expect($blankPdfScoreTableHtml)->toContain('<div class="total-number"></div>');
 
     $this->actingAs($scorekeeper);
 
@@ -4188,10 +4356,188 @@ test('scorekeepers can download a match scoring PDF', function () {
     $response->assertOk();
     $response->assertHeader('content-type', 'application/pdf');
     expect(strlen($response->getContent()))->toBeGreaterThan(800);
+    expect($response->headers->get('content-disposition'))->toContain('attachment');
+
+    $previewResponse = $this->get(route('admin.tournaments.matches.pdf', [
+        'tournament' => $tournament,
+        'match' => $match,
+        'preview' => 1,
+    ]));
+    $previewResponse->assertOk();
+    expect($previewResponse->headers->get('content-disposition'))->toContain('inline');
 
     $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
         ->assertOk()
-        ->assertSee('Export match PDF', false);
+        ->assertSee('Export Match PDF', false)
+        ->assertSee('Open Public Match', false)
+        ->assertDontSee('Export Spirit Scoring PDF', false);
+
+    $this->get(route('admin.tournaments.matches.spirit-pdf', ['tournament' => $tournament, 'match' => $match]))
+        ->assertNotFound();
+
+    $match->update([
+        'status' => 'scheduled',
+        'home_score' => null,
+        'away_score' => null,
+    ]);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertSee('Download MATCH/SPIRIT SCORE SHEETS', false)
+        ->assertDontSee('Export Match PDF', false);
+
+    $scheduledSheetPdf = $this->get(route('admin.tournaments.matches.pdf', ['tournament' => $tournament, 'match' => $match]));
+    $scheduledSheetPdf->assertOk()->assertHeader('content-type', 'application/pdf');
+    expect(strlen($scheduledSheetPdf->getContent()))->toBeGreaterThan(800);
+
+    $match->update([
+        'status' => 'completed',
+        'home_score' => 10,
+        'away_score' => 7,
+    ]);
+
+    MatchSpiritScore::query()->updateOrCreate(
+        ['match_id' => $match->id, 'scored_team_id' => $homeTeam->id],
+        [
+            'tournament_id' => $tournament->id,
+            'scoring_team_id' => $awayTeam->id,
+            'spirit_captain_id' => null,
+            'knowledge_rules_score' => 3,
+            'fouls_body_contact_score' => 3,
+            'fair_mindedness_score' => 3,
+            'positive_attitude_score' => 2,
+            'communication_respect_score' => 2,
+            'total_score' => 13,
+            'notes' => 'pdf-test',
+        ],
+    );
+
+    MatchSpiritScore::query()->updateOrCreate(
+        ['match_id' => $match->id, 'scored_team_id' => $awayTeam->id],
+        [
+            'tournament_id' => $tournament->id,
+            'scoring_team_id' => $homeTeam->id,
+            'spirit_captain_id' => null,
+            'knowledge_rules_score' => 2,
+            'fouls_body_contact_score' => 2,
+            'fair_mindedness_score' => 2,
+            'positive_attitude_score' => 2,
+            'communication_respect_score' => 2,
+            'total_score' => 10,
+            'notes' => 'pdf-test',
+        ],
+    );
+
+    $spiritPdf = $this->get(route('admin.tournaments.matches.spirit-pdf', ['tournament' => $tournament, 'match' => $match]));
+    $spiritPdf->assertOk()->assertHeader('content-type', 'application/pdf');
+    expect(strlen($spiritPdf->getContent()))->toBeGreaterThan(400);
+
+    $this->get(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertOk()
+        ->assertSee('Export Match PDF', false)
+        ->assertDontSee('Export Spirit Scoring PDF', false)
+        ->assertSee('Spirit Scoring', false);
+});
+
+test('match scoring PDF export uses the same route and landscape layout for every bracket stage', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Stage PDF Cup',
+        'slug' => 'stage-pdf-cup-'.substr(md5((string) microtime(true)), 0, 12),
+        'venue' => 'Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Stage Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Stage Away',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'user_id' => null,
+        'name' => 'Roster One',
+        'nickname' => null,
+        'gender' => 'male',
+        'age' => 20,
+        'address' => null,
+        'role' => 'member',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Stage Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 1,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'completed',
+        'home_score' => 3,
+        'away_score' => 2,
+        'pitch_id' => $pitch->id,
+    ]);
+
+    $this->actingAs($scorekeeper);
+
+    $stages = [
+        'round_robin',
+        'quarterfinal',
+        'semifinal',
+        'championship',
+        'placement',
+        'crossover',
+        'group',
+    ];
+
+    foreach ($stages as $stage) {
+        $match->update(['stage' => $stage]);
+
+        $response = $this->get(route('admin.tournaments.matches.pdf', [
+            'tournament' => $tournament,
+            'match' => $match->fresh(),
+        ]));
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'application/pdf');
+        expect(strlen($response->getContent()))->toBeGreaterThan(400);
+    }
 });
 
 test('completed crossover scoring stays on scoring page and syncs default pool tags', function () {

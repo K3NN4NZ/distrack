@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Admin\AdminTeamRosterController;
 use App\Http\Controllers\Admin\TeamController as AdminTeamController;
 use App\Http\Controllers\Admin\TournamentController;
 use App\Http\Controllers\PhilippineLocationController;
@@ -63,7 +64,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::delete('/{tournament}/matches/{match}/scoring/{scoreLog}', 'destroyMatchScoreLog')->name('matches.scoring.destroy');
                 Route::patch('/{tournament}/matches/{match}/scoring/player-stats', 'updateMatchPlayerStat')->name('matches.scoring.player-stats.update');
                 Route::post('/{tournament}/matches/{match}/scoring/spirit', 'storeMatchSpiritScores')->name('matches.scoring.spirit.store');
+                Route::patch('/{tournament}/matches/{match}/spirit-scores', 'patchMatchSpiritScores')->name('matches.scoring.spirit-scores.patch');
                 Route::get('/{tournament}/matches/{match}/pdf', 'exportMatchScoringPdf')->name('matches.pdf');
+                Route::get('/{tournament}/matches/{match}/spirit-pdf', 'exportMatchSpiritScoringPdf')->name('matches.spirit-pdf');
             });
 
             Route::middleware('can:access-admin')->group(function () {
@@ -99,14 +102,21 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
     Route::middleware('can:access-admin')
-        ->prefix('admin/teams')
-        ->name('admin.teams.')
-        ->controller(AdminTeamController::class)
+        ->prefix('admin')
+        ->name('admin.')
         ->group(function () {
-            Route::get('/', 'index')->name('index');
-            Route::post('/', 'store')->name('store');
-            Route::put('/{team}', 'update')->name('update');
-            Route::delete('/{team}', 'destroy')->name('destroy');
+            Route::get('teams', [AdminTeamController::class, 'index'])->name('teams.index');
+            Route::post('teams', [AdminTeamController::class, 'store'])->name('teams.store');
+            Route::get('teams/{team}', [AdminTeamController::class, 'show'])->name('teams.show');
+            Route::get('teams/{team}/edit', [AdminTeamController::class, 'edit'])->name('teams.edit');
+            Route::match(['put', 'patch'], 'teams/{team}', [AdminTeamController::class, 'update'])->name('teams.update');
+            Route::delete('teams/{team}', [AdminTeamController::class, 'destroy'])->name('teams.destroy');
+
+            Route::get('teams/{team}/roster', [AdminTeamRosterController::class, 'index'])->name('teams.roster.index');
+            Route::post('teams/{team}/roster/upload', [AdminTeamRosterController::class, 'upload'])->name('teams.roster.upload');
+            Route::post('teams/{team}/roster', [AdminTeamRosterController::class, 'store'])->name('teams.roster.store');
+            Route::patch('teams/{team}/roster/{teamMember}', [AdminTeamRosterController::class, 'update'])->name('teams.roster.update');
+            Route::delete('teams/{team}/roster/{teamMember}', [AdminTeamRosterController::class, 'destroy'])->name('teams.roster.destroy');
         });
 });
 

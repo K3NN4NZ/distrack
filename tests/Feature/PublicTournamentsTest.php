@@ -412,17 +412,17 @@ test('public tournament stats tab shows leaderboard filters and applies stats se
     ]);
 
     foreach ([
-        ['member' => $homeMale, 'goals' => 4, 'assists' => 1],
-        ['member' => $homeFemale, 'goals' => 2, 'assists' => 5],
-        ['member' => $awayMale, 'goals' => 3, 'assists' => 1],
-        ['member' => $awayFemale, 'goals' => 2, 'assists' => 4],
+        ['member' => $homeMale, 'goals' => 4, 'assists' => 1, 'blocks' => 2],
+        ['member' => $homeFemale, 'goals' => 2, 'assists' => 5, 'blocks' => 0],
+        ['member' => $awayMale, 'goals' => 3, 'assists' => 1, 'blocks' => 3],
+        ['member' => $awayFemale, 'goals' => 2, 'assists' => 4, 'blocks' => 1],
     ] as $statLine) {
         MatchPlayerStat::query()->create([
             'match_id' => $match->id,
             'team_member_id' => $statLine['member']->id,
             'goals' => $statLine['goals'],
             'assists' => $statLine['assists'],
-            'blocks' => 0,
+            'blocks' => $statLine['blocks'],
         ]);
     }
 
@@ -439,11 +439,37 @@ test('public tournament stats tab shows leaderboard filters and applies stats se
         ->assertSee('data-livewire-navigate-form', false)
         ->assertSee('wire:navigate.preserve-scroll', false)
         ->assertSee('Total O')
+        ->assertSee('Blocks')
         ->assertSeeInOrder([
             'Lea Torres (LT)',
             'Mika Javier (Mika)',
             'Marco Santos (Marco)',
         ]);
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'stats',
+        'metric' => 'blocks',
+    ]))
+        ->assertOk()
+        ->assertSee('metric=blocks', false)
+        ->assertSeeInOrder([
+            'Paolo Reyes (Paolo)',
+            'Marco Santos (Marco)',
+            'Mika Javier (Mika)',
+            'Lea Torres (LT)',
+        ]);
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'stats',
+        'gender' => 'women',
+        'metric' => 'blocks',
+        'search' => 'Mika',
+    ]))
+        ->assertOk()
+        ->assertSee('Mika Javier (Mika)')
+        ->assertDontSee('Lea Torres (LT)');
 
     $this->get(route('tournaments.show', [
         'tournament' => $tournament,
@@ -585,6 +611,106 @@ test('public tournament stats tab paginates leaderboard results', function () {
         ->assertSee('Player 21 (P21)')
         ->assertSee('Player 22 (P22)')
         ->assertDontSee('Player 01 (P01)');
+});
+
+test('public tournament stats tab omits registration tier nicknames like Full from display names', function () {
+    $organizer = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $organizer->id,
+        'name' => 'Roster Label Cup',
+        'slug' => 'roster-label-cup',
+        'venue' => 'Test Field',
+        'starts_at' => now()->addWeek(),
+        'ends_at' => now()->addWeek()->addDay(),
+        'status' => 'live',
+        'city' => 'Manila',
+        'country_name' => 'Philippines',
+        'timezone' => 'Asia/Manila',
+        'division' => 'Open',
+        'is_public' => true,
+    ]);
+
+    $team = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Tier Hawks',
+        'address' => 'Manila',
+        'city' => 'Manila',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    $member = TeamMember::query()->create([
+        'team_id' => $team->id,
+        'name' => 'Jordan Cruz',
+        'nickname' => 'Full',
+        'gender' => 'Male',
+        'role' => 'member',
+    ]);
+
+    $registration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+
+    $otherTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Bench Owls',
+        'address' => 'Manila',
+        'city' => 'Manila',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    $otherRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $otherTeam->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $registration->id,
+        'away_registration_id' => $otherRegistration->id,
+        'stage' => 'group',
+        'match_number' => 1,
+        'scheduled_at' => now()->addWeek()->setTime(9, 0),
+        'status' => 'completed',
+        'home_score' => 5,
+        'away_score' => 3,
+    ]);
+
+    MatchPlayerStat::query()->create([
+        'match_id' => $match->id,
+        'team_member_id' => $member->id,
+        'goals' => 2,
+        'assists' => 1,
+        'blocks' => 0,
+    ]);
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'stats',
+        'metric' => 'goals',
+    ]))
+        ->assertOk()
+        ->assertSee('Jordan Cruz')
+        ->assertSee('Tier Hawks')
+        ->assertDontSee('Jordan Cruz (Full)');
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'stats',
+        'metric' => 'assists',
+        'search' => 'full',
+    ]))
+        ->assertOk()
+        ->assertSee('Jordan Cruz')
+        ->assertDontSee('Jordan Cruz (Full)');
 });
 
 test('private tournaments are not accessible on the public detail page', function () {

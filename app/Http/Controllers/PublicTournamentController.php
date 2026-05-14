@@ -167,6 +167,7 @@ class PublicTournamentController extends Controller
         $statsMetricOptions = collect([
             ['value' => 'goals', 'label' => 'Goals'],
             ['value' => 'assists', 'label' => 'Assists'],
+            ['value' => 'blocks', 'label' => 'Blocks'],
             ['value' => 'total_offense', 'label' => 'Total O'],
         ]);
         $statsFilters = [
@@ -1463,6 +1464,7 @@ class PublicTournamentController extends Controller
 
                 $goals = (int) $stats->sum('goals');
                 $assists = (int) $stats->sum('assists');
+                $blocks = (int) $stats->sum('blocks');
 
                 return [
                     'member' => $member,
@@ -1471,6 +1473,7 @@ class PublicTournamentController extends Controller
                     'gender' => $this->normalizePlayerGender($member->gender),
                     'goals' => $goals,
                     'assists' => $assists,
+                    'blocks' => $blocks,
                     'total_offense' => $goals + $assists,
                     'matches_played' => $stats->pluck('match_id')->unique()->count(),
                     'search_index' => str(collect([
@@ -1482,7 +1485,7 @@ class PublicTournamentController extends Controller
             })
             ->filter()
             ->filter(function (array $player) use ($genderFilter, $needle): bool {
-                if ($player['total_offense'] <= 0) {
+                if ($player['goals'] + $player['assists'] + $player['blocks'] <= 0) {
                     return false;
                 }
 
@@ -1544,22 +1547,46 @@ class PublicTournamentController extends Controller
     protected function statsLeaderboardSortOrder(string $metric): array
     {
         return match ($metric) {
-            'assists' => ['assists', 'total_offense', 'goals', 'matches_played'],
-            'total_offense' => ['total_offense', 'goals', 'assists', 'matches_played'],
-            default => ['goals', 'total_offense', 'assists', 'matches_played'],
+            'assists' => ['assists', 'total_offense', 'goals', 'blocks', 'matches_played'],
+            'blocks' => ['blocks', 'total_offense', 'goals', 'assists', 'matches_played'],
+            'total_offense' => ['total_offense', 'goals', 'assists', 'blocks', 'matches_played'],
+            default => ['goals', 'total_offense', 'assists', 'blocks', 'matches_played'],
         };
     }
 
     /**
      * Render the public player name label used in stats tables.
+     *
+     * Registration tier is sometimes stored in {@see TeamMember::$nickname} (see static roster seeders).
+     * Those values must not be shown as a parenthetical suffix on the public leaderboard.
      */
     protected function formatStatsPlayerName($member): string
     {
-        if (filled($member->nickname)) {
-            return "{$member->name} ({$member->nickname})";
+        $nickname = $member->nickname;
+
+        if (filled($nickname) && ! $this->nicknameIsRegistrationTierLabel($nickname)) {
+            return "{$member->name} ({$nickname})";
         }
 
         return $member->name;
+    }
+
+    /**
+     * Whether the member nickname should be hidden on public stats (roster / registration tier only).
+     */
+    protected function nicknameIsRegistrationTierLabel(string $nickname): bool
+    {
+        $normalized = str($nickname)->lower()->trim()->toString();
+
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (in_array($normalized, ['full', 'lite', 'organizer', 'partial', 'guest', 'maybe'], true)) {
+            return true;
+        }
+
+        return str_starts_with($normalized, 'walk in');
     }
 
     /**

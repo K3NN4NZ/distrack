@@ -4,4 +4,5 @@
     'playerStats' => $playerStats,
     'totalScore' => $totalScore,
     'side' => $side,
+    'isCompleted' => $isCompleted ?? true,
 ])

@@ -259,3 +259,69 @@ test('admin users cannot delete teams with tournament registrations', function (
 
     expect(Team::query()->whereKey($team->id)->exists())->toBeTrue();
 });
+
+test('admin can view team detail roster and edit pages', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $team = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Detail Viewers',
+        'short_name' => 'DV',
+        'description' => 'Test team',
+        'address' => 'Street',
+        'city' => 'City',
+        'province' => 'Province',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $team->id,
+        'name' => 'Alex Player',
+        'gender' => 'male',
+        'jersey_number' => 7,
+        'role' => 'member',
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->get(route('admin.teams.show', $team))
+        ->assertOk()
+        ->assertSee('Detail Viewers')
+        ->assertSee('DV')
+        ->assertSee('Alex Player');
+
+    $this->get(route('admin.teams.edit', $team))
+        ->assertOk()
+        ->assertSee('Edit Team');
+
+    $this->get(route('admin.teams.roster.index', $team))
+        ->assertOk()
+        ->assertSee('Alex Player');
+});
+
+test('admin can import roster from csv', function () {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $team = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'CSV Importers',
+        'address' => 'Street',
+        'city' => 'City',
+        'province' => 'Province',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    $csv = "name,gender,jersey_number,email,role,is_captain,is_spirit_captain\nJane Doe,female,3,jane@example.com,member,0,0\n";
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.teams.roster.upload', $team), [
+        'roster_file' => UploadedFile::fake()->createWithContent('roster.csv', $csv),
+    ])->assertRedirect(route('admin.teams.roster.index', $team));
+
+    expect(TeamMember::query()->where('team_id', $team->id)->where('name', 'Jane Doe')->exists())->toBeTrue();
+});

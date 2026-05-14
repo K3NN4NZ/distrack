@@ -31,7 +31,7 @@
     </div>
 
     <div class="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-        <div class="min-w-0 rounded-lg bg-white p-3 ring-1 ring-neutral-200 dark:bg-zinc-900 dark:ring-neutral-800">
+        <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($crossMatch, 'home') }}">
             <div class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Home') }}</div>
             <div class="mt-1 flex items-center gap-2">
                 @if ($crossHomeRank)
@@ -43,7 +43,7 @@
 
         <div class="text-center text-xs font-semibold uppercase text-zinc-400">{{ __('vs') }}</div>
 
-        <div class="min-w-0 rounded-lg bg-white p-3 ring-1 ring-neutral-200 dark:bg-zinc-900 dark:ring-neutral-800">
+        <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($crossMatch, 'away') }}">
             <div class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Away') }}</div>
             <div class="mt-1 flex items-center gap-2">
                 @if ($crossAwayRank)

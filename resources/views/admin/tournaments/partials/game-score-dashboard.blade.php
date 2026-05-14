@@ -169,20 +169,31 @@
                 data-game-status="{{ $match->status }}"
                 data-needs-teams="{{ (! $match->homeRegistration || ! $match->awayRegistration) ? 'true' : 'false' }}"
             >
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="flex flex-col gap-3">
                     <div class="min-w-0">
                         <div class="flex flex-wrap items-center gap-2">
                             <span class="rounded-md px-2.5 py-1 text-xs font-semibold {{ $statusTone }}">{{ $statusLabel }}</span>
                             <span class="text-xs text-zinc-500 dark:text-zinc-400">{{ __('Game #:value', ['value' => $match->match_number ?? '-']) }}</span>
                         </div>
 
-                        <div class="mt-3 text-lg font-semibold text-zinc-900 dark:text-white">
-                            {{ $homeName }}
-                            <span class="mx-2 text-sm font-bold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('vs') }}</span>
-                            {{ $awayName }}
+                        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'home') }}">
+                                <div class="text-[10px] font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{{ __('Home') }}</div>
+                                <div class="mt-1 truncate text-base font-semibold text-zinc-900 dark:text-white">{{ $homeName }}</div>
+                                @if (! is_null($match->home_score) && ! is_null($match->away_score))
+                                    <div class="mt-2 text-2xl font-bold tabular-nums text-zinc-900 dark:text-white">{{ $match->home_score }}</div>
+                                @endif
+                            </div>
+                            <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'away') }}">
+                                <div class="text-[10px] font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{{ __('Away') }}</div>
+                                <div class="mt-1 truncate text-base font-semibold text-zinc-900 dark:text-white">{{ $awayName }}</div>
+                                @if (! is_null($match->home_score) && ! is_null($match->away_score))
+                                    <div class="mt-2 text-2xl font-bold tabular-nums text-zinc-900 dark:text-white">{{ $match->away_score }}</div>
+                                @endif
+                            </div>
                         </div>
 
-                        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-600 dark:text-zinc-300">
+                        <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-600 dark:text-zinc-300">
                             <span>{{ str($match->stage)->replace('_', ' ')->headline() }}</span>
                             @if ($match->round_label)
                                 <span>{{ $match->round_label }}</span>
@@ -190,14 +201,10 @@
                             <span>{{ __('Pitch: :value', ['value' => $match->pitch?->name ?? 'Unassigned']) }}</span>
                             <span>{{ __('Time: :value', ['value' => $match->scheduled_at?->format('M j, Y g:i A') ?? 'TBD']) }}</span>
                         </div>
-                    </div>
-
-                    <div class="text-left sm:text-right">
                         @if (! is_null($match->home_score) && ! is_null($match->away_score))
-                            <div class="text-2xl font-semibold text-zinc-900 dark:text-white">{{ $match->home_score }} - {{ $match->away_score }}</div>
-                            <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Current score') }}</div>
+                            <div class="mt-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">{{ __('Final: :home - :away', ['home' => $match->home_score, 'away' => $match->away_score]) }}</div>
                         @else
-                            <div class="text-sm font-medium text-zinc-500 dark:text-zinc-400">{{ __('No score yet') }}</div>
+                            <div class="mt-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">{{ __('No score yet') }}</div>
                         @endif
                     </div>
                 </div>

@@ -14,7 +14,7 @@ class TeamMember extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['team_id', 'user_id', 'name', 'nickname', 'gender', 'age', 'address', 'role'];
+    protected $fillable = ['team_id', 'user_id', 'name', 'nickname', 'gender', 'jersey_number', 'email', 'contact', 'age', 'address', 'role'];
 
     /**
      * @return array<string, string>
@@ -23,6 +23,7 @@ class TeamMember extends Model
     {
         return [
             'age' => 'integer',
+            'jersey_number' => 'integer',
         ];
     }
 
@@ -48,5 +49,27 @@ class TeamMember extends Model
     public function matchStats(): HasMany
     {
         return $this->hasMany(MatchPlayerStat::class);
+    }
+
+    /**
+     * Whether this roster row is referenced by scoring or spirit records.
+     */
+    public function isLinkedToMatchRecords(): bool
+    {
+        if ($this->matchStats()->exists()) {
+            return true;
+        }
+
+        if (MatchScoreLog::query()
+            ->where(function ($query): void {
+                $query->where('team_member_id', $this->id)
+                    ->orWhere('assist_team_member_id', $this->id);
+            })
+            ->exists()
+        ) {
+            return true;
+        }
+
+        return MatchSpiritScore::query()->where('spirit_captain_id', $this->id)->exists();
     }
 }

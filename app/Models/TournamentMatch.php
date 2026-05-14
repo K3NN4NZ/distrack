@@ -23,6 +23,15 @@ class TournamentMatch extends Model
     public const QUARTER_FINAL_AUTO_GENERATED_MARKER = '[[quarterfinal:auto-generated]]';
 
     /**
+     * Persisted {@code matches.status} values used across scheduling and scoring.
+     */
+    public const STATUS_SCHEDULED = 'scheduled';
+
+    public const STATUS_LIVE = 'live';
+
+    public const STATUS_COMPLETED = 'completed';
+
+    /**
      * @var string
      */
     protected $table = 'matches';
@@ -43,6 +52,14 @@ class TournamentMatch extends Model
             'home_score' => 'integer',
             'away_score' => 'integer',
         ];
+    }
+
+    /**
+     * Whether this match is completed for admin scoring exports and final score UX.
+     */
+    public function isCompletedMatchStatus(): bool
+    {
+        return strtolower((string) $this->status) === self::STATUS_COMPLETED;
     }
 
     /**

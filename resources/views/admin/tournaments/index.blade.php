@@ -176,6 +176,7 @@
         ['key' => 'quarter-final', 'label' => __('Quarter Finals')],
         ['key' => 'semi-finals', 'label' => __('Semi Finals')],
         ['key' => 'championship', 'label' => __('Championship')],
+        ['key' => 'report', 'label' => __('Report')],
     ]);
     $adminTabKeys = array_column($adminTabs, 'key');
     $requestedTab = trim(request()->string('tab')->toString(), "\"' ");
@@ -784,8 +785,6 @@
                                                                 $awaySeed = $awayReg?->seed_number;
                                                                 $matchStatus = $match->status ?? 'scheduled';
                                                                 $hasResult = $matchStatus === 'completed' && $match->home_score !== null && $match->away_score !== null;
-                                                                $homeWins = $hasResult && $match->home_score > $match->away_score;
-                                                                $awayWins = $hasResult && $match->away_score > $match->home_score;
                                                                 $statusStyles = match ($matchStatus) {
                                                                     'completed' => 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
                                                                     'live' => 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
@@ -808,39 +807,43 @@
                                                                     </span>
                                                                 </div>
 
-                                                                <div class="px-3 py-3">
-                                                                    <div class="flex items-center justify-between gap-2 {{ $homeWins ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-700 dark:text-zinc-200' }}">
-                                                                        <div class="flex min-w-0 items-center gap-2">
-                                                                            @if ($homeSeed)
-                                                                                <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-[#2f55b7]/10 px-1 text-[10px] font-bold text-[#2f55b7] dark:bg-[#2f55b7]/20 dark:text-blue-300">
-                                                                                    {{ $homeSeed }}
-                                                                                </span>
+                                                                <div class="space-y-2 px-3 py-3">
+                                                                    <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'home') }}">
+                                                                        <div class="flex items-center justify-between gap-2 font-semibold text-zinc-900 dark:text-white">
+                                                                            <div class="flex min-w-0 items-center gap-2">
+                                                                                @if ($homeSeed)
+                                                                                    <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-[#2f55b7]/10 px-1 text-[10px] font-bold text-[#2f55b7] dark:bg-[#2f55b7]/20 dark:text-blue-300">
+                                                                                        {{ $homeSeed }}
+                                                                                    </span>
+                                                                                @endif
+                                                                                <span class="truncate text-sm">{{ $homeName }}</span>
+                                                                            </div>
+                                                                            @if ($hasResult)
+                                                                                <span class="shrink-0 text-base font-bold tabular-nums">{{ $match->home_score }}</span>
                                                                             @endif
-                                                                            <span class="truncate text-sm">{{ $homeName }}</span>
                                                                         </div>
-                                                                        @if ($hasResult)
-                                                                            <span class="shrink-0 text-base font-bold tabular-nums {{ $homeWins ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400' }}">{{ $match->home_score }}</span>
-                                                                        @endif
                                                                     </div>
 
-                                                                    <div class="my-1 flex items-center gap-2">
+                                                                    <div class="flex items-center gap-2">
                                                                         <span class="h-px flex-1 bg-neutral-200 dark:bg-neutral-700"></span>
                                                                         <span class="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-400 dark:text-zinc-500">{{ __('vs') }}</span>
                                                                         <span class="h-px flex-1 bg-neutral-200 dark:bg-neutral-700"></span>
                                                                     </div>
 
-                                                                    <div class="flex items-center justify-between gap-2 {{ $awayWins ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-700 dark:text-zinc-200' }}">
-                                                                        <div class="flex min-w-0 items-center gap-2">
-                                                                            @if ($awaySeed)
-                                                                                <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-amber-500/10 px-1 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
-                                                                                    {{ $awaySeed }}
-                                                                                </span>
+                                                                    <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'away') }}">
+                                                                        <div class="flex items-center justify-between gap-2 font-semibold text-zinc-900 dark:text-white">
+                                                                            <div class="flex min-w-0 items-center gap-2">
+                                                                                @if ($awaySeed)
+                                                                                    <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-amber-500/10 px-1 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                                                                                        {{ $awaySeed }}
+                                                                                    </span>
+                                                                                @endif
+                                                                                <span class="truncate text-sm">{{ $awayName }}</span>
+                                                                            </div>
+                                                                            @if ($hasResult)
+                                                                                <span class="shrink-0 text-base font-bold tabular-nums">{{ $match->away_score }}</span>
                                                                             @endif
-                                                                            <span class="truncate text-sm">{{ $awayName }}</span>
                                                                         </div>
-                                                                        @if ($hasResult)
-                                                                            <span class="shrink-0 text-base font-bold tabular-nums {{ $awayWins ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400' }}">{{ $match->away_score }}</span>
-                                                                        @endif
                                                                     </div>
                                                                 </div>
 
@@ -1132,6 +1135,11 @@
                             {{ __('Championship for this tournament size is reached through pooling and bracket generation. Switch to a small-tournament Day 2 knockout (fewer than :count teams) to manage Game 48 on this tab.', ['count' => $minimumBracketTeamCount]) }}
                         </section>
                     @endif
+                @elseif ($selectedTab === 'report')
+                    @include('admin.tournaments.partials.report', [
+                        'selectedTournament' => $selectedTournament,
+                        'tournamentReport' => $tournamentReport ?? null,
+                    ])
                 @endif
 
                 @include('admin.tournaments.partials.setup-add-pitch-modal', [

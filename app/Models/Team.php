@@ -16,7 +16,7 @@ class Team extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['owner_user_id', 'name', 'address', 'city', 'province', 'country_name', 'logo_path', 'status'];
+    protected $fillable = ['owner_user_id', 'name', 'short_name', 'description', 'address', 'city', 'province', 'country_name', 'logo_path', 'status'];
 
     /**
      * Team owner.
@@ -77,6 +77,24 @@ class Team extends Model
         }
 
         return Storage::disk('public')->url($this->logo_path);
+    }
+
+    /**
+     * Two-letter style initials for avatar placeholders.
+     */
+    public function initials(): string
+    {
+        $words = str($this->name)->explode(' ')->filter();
+
+        if ($words->isEmpty()) {
+            return '?';
+        }
+
+        if ($words->count() === 1) {
+            return str($words->first())->substr(0, 2)->upper()->toString();
+        }
+
+        return str($words->first())->substr(0, 1)->append(str($words->last())->substr(0, 1))->upper()->toString();
     }
 
     /**

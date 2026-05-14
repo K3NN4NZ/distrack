@@ -1,8 +1,5 @@
 <x-layouts::app :title="__('Teams')">
     @php
-        $editModalTeamId = old('edit_team_id')
-            ? (int) old('edit_team_id')
-            : null;
         $showCreateModal = old('create_team_modal') === '1';
     @endphp
 
@@ -33,7 +30,7 @@
                 <div>
                     <flux:heading size="xl">{{ __('Teams Directory') }}</flux:heading>
                     <flux:text class="mt-2 max-w-3xl">
-                        {{ __('Create, edit, and delete team profiles while keeping roster leadership and tournament usage visible in one admin page.') }}
+                        {{ __('Search teams, open profiles, edit details, and manage rosters from one place.') }}
                     </flux:text>
                 </div>
 
@@ -53,26 +50,52 @@
                     </flux:modal.trigger>
                 </div>
             </div>
+
+            <form method="GET" action="{{ route('admin.teams.index') }}" class="mt-6 grid gap-4 border-t border-neutral-200 pt-6 dark:border-neutral-700 md:grid-cols-[1fr_1fr_auto] md:items-end">
+                <flux:input name="q" :label="__('Search by name')" :value="$filters['q'] ?? ''" type="search" placeholder="{{ __('Team name or code…') }}" />
+
+                <div>
+                    <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">{{ __('Tournament') }}</label>
+                    <select
+                        name="tournament_id"
+                        class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+                    >
+                        <option value="">{{ __('All teams') }}</option>
+                        @foreach ($tournaments as $t)
+                            <option value="{{ $t->id }}" @selected((string) ($filters['tournament_id'] ?? '') === (string) $t->id)>{{ $t->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <div class="flex gap-2">
+                    <flux:button type="submit" variant="filled">{{ __('Apply') }}</flux:button>
+                    <a href="{{ route('admin.teams.index') }}" wire:navigate class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-neutral-600 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                        {{ __('Reset') }}
+                    </a>
+                </div>
+            </form>
         </section>
 
         <section class="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-zinc-900">
             @if ($teams->isEmpty())
                 <div class="p-6 text-sm text-zinc-600 dark:text-zinc-300">
-                    {{ __('No teams have been created yet.') }}
+                    {{ __('No teams match your filters.') }}
                 </div>
             @else
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-neutral-200 dark:divide-neutral-700">
                         <thead class="bg-zinc-50 dark:bg-zinc-800/60">
                             <tr class="text-left text-sm text-zinc-600 dark:text-zinc-300">
-                                <th class="px-5 py-3 font-medium">{{ __('Team') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Captain') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Spirit Captain') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Roster') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Tournaments') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Location') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Status') }}</th>
-                                <th class="px-5 py-3 font-medium">{{ __('Actions') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Logo') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Team') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Code') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Captain') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Spirit Captain') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Roster') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Tournaments') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Location') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Status') }}</th>
+                                <th class="px-4 py-3 font-medium">{{ __('Actions') }}</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-neutral-200 dark:divide-neutral-700">
@@ -81,46 +104,49 @@
                                     $captain = $team->members->firstWhere('role', 'captain');
                                     $spiritCaptain = $team->members->firstWhere('role', 'spirit_captain');
                                     $teamDeleteLocked = $team->registrations_count > 0 || $team->members_with_match_stats;
+                                    $logoUrl = $team->logoUrl();
                                 @endphp
                                 <tr class="text-sm text-zinc-700 dark:text-zinc-200">
-                                    <td class="px-5 py-4">
+                                    <td class="px-4 py-3">
+                                        @if ($logoUrl)
+                                            <img src="{{ $logoUrl }}" alt="" class="h-12 w-12 rounded-lg border border-neutral-200 object-cover dark:border-neutral-700">
+                                        @else
+                                            <div class="flex h-12 w-12 items-center justify-center rounded-lg border border-neutral-200 bg-zinc-100 text-xs font-bold text-zinc-600 dark:border-neutral-700 dark:bg-zinc-800 dark:text-zinc-300">
+                                                {{ $team->initials() }}
+                                            </div>
+                                        @endif
+                                    </td>
+                                    <td class="px-4 py-3">
                                         <div class="font-semibold text-zinc-900 dark:text-white">{{ $team->name }}</div>
                                     </td>
-                                    <td class="px-5 py-4">{{ $captain?->name ?? __('Not assigned') }}</td>
-                                    <td class="px-5 py-4">{{ $spiritCaptain?->name ?? __('Not assigned') }}</td>
-                                    <td class="px-5 py-4">{{ $team->members_count }}</td>
-                                    <td class="px-5 py-4">{{ $team->registrations_count }}</td>
-                                    <td class="px-5 py-4">{{ $team->locationLabel() ?? __('No location') }}</td>
-                                    <td class="px-5 py-4">
+                                    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">{{ $team->short_name ?: '—' }}</td>
+                                    <td class="px-4 py-3">{{ $captain?->name ?? __('Not assigned') }}</td>
+                                    <td class="px-4 py-3">{{ $spiritCaptain?->name ?? __('Not assigned') }}</td>
+                                    <td class="px-4 py-3">{{ $team->members_count }}</td>
+                                    <td class="px-4 py-3">{{ $team->registrations_count }}</td>
+                                    <td class="px-4 py-3">{{ $team->locationLabel() ?? __('No location') }}</td>
+                                    <td class="px-4 py-3">
                                         <span class="inline-flex rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
                                             {{ str($team->status)->headline() }}
                                         </span>
                                     </td>
-                                    <td class="px-5 py-4">
-                                        <div class="flex flex-wrap gap-2">
-                                            <flux:modal.trigger name="edit-team-modal-{{ $team->id }}">
-                                                <flux:button variant="ghost" size="sm">
-                                                    {{ __('Edit') }}
-                                                </flux:button>
-                                            </flux:modal.trigger>
-
+                                    <td class="px-4 py-3">
+                                        <div class="flex flex-col gap-1.5">
+                                            <a href="{{ route('admin.teams.show', $team) }}" wire:navigate class="text-sm font-medium text-[#2f55b7] hover:underline dark:text-sky-300">{{ __('View') }}</a>
+                                            <a href="{{ route('admin.teams.edit', $team) }}" wire:navigate class="text-sm font-medium text-[#2f55b7] hover:underline dark:text-sky-300">{{ __('Edit Team') }}</a>
+                                            <a href="{{ route('admin.teams.roster.index', $team) }}" wire:navigate class="text-sm font-medium text-[#2f55b7] hover:underline dark:text-sky-300">{{ __('Manage Roster') }}</a>
                                             @if ($teamDeleteLocked)
-                                                <span class="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300">
-                                                    {{ __('Locked') }}
-                                                </span>
+                                                <span class="text-[11px] font-medium text-amber-700 dark:text-amber-300">{{ __('Delete locked') }}</span>
                                             @else
                                                 <form
                                                     method="POST"
                                                     action="{{ route('admin.teams.destroy', $team) }}"
                                                     onsubmit="return confirm('{{ __('Delete this team and its roster?') }}')"
+                                                    class="inline"
                                                 >
                                                     @csrf
                                                     @method('DELETE')
-
-                                                    <button
-                                                        type="submit"
-                                                        class="rounded-full border border-red-200 px-3 py-1 text-[11px] font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                                                    >
+                                                    <button type="submit" class="text-left text-sm font-medium text-red-600 hover:underline dark:text-red-400">
                                                         {{ __('Delete') }}
                                                     </button>
                                                 </form>
@@ -135,184 +161,17 @@
             @endif
         </section>
 
-        @foreach ($teams as $team)
-            @php
-                $teamLogo = $team->logoUrl();
-                $isEditingThisTeam = $editModalTeamId === $team->id;
-            @endphp
-
-            <flux:modal
-                name="edit-team-modal-{{ $team->id }}"
-                :show="$isEditingThisTeam"
-                class="max-w-3xl"
-            >
-                <div class="max-h-[85vh] space-y-6 overflow-y-auto pr-1">
-                    <div class="flex items-start justify-between gap-4">
-                        <div>
-                            <flux:heading size="lg">{{ __('Edit Team') }}</flux:heading>
-                            <flux:text class="mt-1">
-                                {{ __('Update :team without leaving the teams directory.', ['team' => $team->name]) }}
-                            </flux:text>
-                        </div>
-
-                        <flux:modal.close>
-                            <flux:button variant="ghost">
-                                {{ __('Close') }}
-                            </flux:button>
-                        </flux:modal.close>
-                    </div>
-
-                    <form method="POST" action="{{ route('admin.teams.update', $team) }}" enctype="multipart/form-data" class="space-y-4">
-                        @csrf
-                        @method('PUT')
-                        <input type="hidden" name="edit_team_id" value="{{ $team->id }}">
-
-                        <flux:input
-                            name="edit_name"
-                            :label="__('Team Name')"
-                            :value="$isEditingThisTeam ? old('edit_name') : $team->name"
-                            type="text"
-                            required
-                        />
-
-                        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                            {{ __('Address') }}
-                            <input
-                                name="edit_address"
-                                type="text"
-                                value="{{ $isEditingThisTeam ? old('edit_address') : $team->address }}"
-                                required
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            />
-                            @error('edit_address')
-                                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
-                        </label>
-
-                        <div class="grid gap-4 md:grid-cols-2">
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('City') }}
-                                <input
-                                    name="edit_city"
-                                    type="text"
-                                    value="{{ $isEditingThisTeam ? old('edit_city') : $team->city }}"
-                                    required
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                />
-                                @error('edit_city')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Province') }}
-                                <input
-                                    name="edit_province"
-                                    type="text"
-                                    value="{{ $isEditingThisTeam ? old('edit_province') : $team->province }}"
-                                    required
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                />
-                                @error('edit_province')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-                        </div>
-
-                        <div class="grid gap-4 md:grid-cols-2">
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Country') }}
-                                <input
-                                    name="edit_country_name"
-                                    type="text"
-                                    value="{{ $isEditingThisTeam ? old('edit_country_name') : ($team->country_name ?: 'Philippines') }}"
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                />
-                                @error('edit_country_name')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-
-                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                                {{ __('Status') }}
-                                <select
-                                    name="edit_status"
-                                    required
-                                    class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                                >
-                                    @foreach (['active', 'inactive', 'archived'] as $status)
-                                        <option value="{{ $status }}" @selected($isEditingThisTeam ? old('edit_status') === $status : $team->status === $status)>{{ str($status)->headline() }}</option>
-                                    @endforeach
-                                </select>
-                                @error('edit_status')
-                                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                                @enderror
-                            </label>
-                        </div>
-
-                        @if ($teamLogo)
-                            <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
-                                <div class="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-300">{{ __('Current Logo') }}</div>
-                                <img
-                                    src="{{ $teamLogo }}"
-                                    alt="{{ $team->name }}"
-                                    class="h-20 w-20 rounded-2xl border border-neutral-200 object-cover dark:border-neutral-700"
-                                >
-                            </div>
-                        @endif
-
-                        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                            {{ __('Replace Logo') }}
-                            <input
-                                name="edit_logo"
-                                type="file"
-                                accept="image/*"
-                                class="mt-2 block w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm file:mr-4 file:rounded-md file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white dark:file:bg-white dark:file:text-zinc-900"
-                            />
-                            @error('edit_logo')
-                                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
-                        </label>
-
-                        @if ($teamLogo)
-                            <label class="flex items-center gap-3 rounded-lg border border-neutral-200 px-4 py-3 text-sm text-zinc-700 dark:border-neutral-700 dark:text-zinc-300">
-                                <input
-                                    type="checkbox"
-                                    name="edit_remove_logo"
-                                    value="1"
-                                    @checked($isEditingThisTeam && old('edit_remove_logo'))
-                                    class="rounded border-neutral-300 text-zinc-900 focus:ring-zinc-500 dark:border-neutral-700 dark:bg-zinc-950"
-                                >
-                                <span>{{ __('Remove current logo if no replacement is uploaded') }}</span>
-                            </label>
-                        @endif
-
-                        <flux:button type="submit" variant="primary" class="w-full">
-                            {{ __('Save Team Changes') }}
-                        </flux:button>
-                    </form>
-                </div>
-            </flux:modal>
-        @endforeach
-
-        <flux:modal
-            name="create-team-modal"
-            :show="$showCreateModal"
-            class="max-w-3xl"
-        >
+        <flux:modal name="create-team-modal" :show="$showCreateModal" class="max-w-3xl">
             <div class="max-h-[85vh] space-y-6 overflow-y-auto pr-1">
                 <div class="flex items-start justify-between gap-4">
                     <div>
                         <flux:heading size="lg">{{ __('Create Team') }}</flux:heading>
                         <flux:text class="mt-1">
-                            {{ __('Register a new team without leaving the teams directory.') }}
+                            {{ __('Register a new team with captain and optional spirit captain.') }}
                         </flux:text>
                     </div>
-
                     <flux:modal.close>
-                        <flux:button variant="ghost">
-                            {{ __('Close') }}
-                        </flux:button>
+                        <flux:button variant="ghost">{{ __('Close') }}</flux:button>
                     </flux:modal.close>
                 </div>
 
@@ -323,33 +182,13 @@
                     <flux:input name="name" :label="__('Team Name')" :value="old('name')" type="text" required />
 
                     <div class="grid gap-4 md:grid-cols-2">
-                        <flux:input
-                            name="captain_name"
-                            :label="__('Captain')"
-                            :value="old('captain_name')"
-                            type="text"
-                            required
-                            autocomplete="name"
-                        />
-
-                        <flux:input
-                            name="spirit_captain_name"
-                            :label="__('Spirit Captain')"
-                            :value="old('spirit_captain_name')"
-                            type="text"
-                            autocomplete="name"
-                        />
+                        <flux:input name="captain_name" :label="__('Captain')" :value="old('captain_name')" type="text" required autocomplete="name" />
+                        <flux:input name="spirit_captain_name" :label="__('Spirit Captain')" :value="old('spirit_captain_name')" type="text" autocomplete="name" />
                     </div>
 
                     <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                         {{ __('Address') }}
-                        <input
-                            name="address"
-                            type="text"
-                            value="{{ old('address') }}"
-                            required
-                            class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                        />
+                        <input name="address" type="text" value="{{ old('address') }}" required class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm dark:border-neutral-700 dark:bg-zinc-950 dark:text-white" />
                         @error('address')
                             <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
                         @enderror
@@ -358,27 +197,14 @@
                     <div class="grid gap-4 md:grid-cols-2">
                         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                             {{ __('City') }}
-                            <input
-                                name="city"
-                                type="text"
-                                value="{{ old('city') }}"
-                                required
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            />
+                            <input name="city" type="text" value="{{ old('city') }}" required class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-zinc-950 dark:text-white" />
                             @error('city')
                                 <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
                             @enderror
                         </label>
-
                         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                             {{ __('Province') }}
-                            <input
-                                name="province"
-                                type="text"
-                                value="{{ old('province') }}"
-                                required
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            />
+                            <input name="province" type="text" value="{{ old('province') }}" required class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-zinc-950 dark:text-white" />
                             @error('province')
                                 <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
                             @enderror
@@ -388,51 +214,28 @@
                     <div class="grid gap-4 md:grid-cols-2">
                         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                             {{ __('Country') }}
-                            <input
-                                name="country_name"
-                                type="text"
-                                value="{{ old('country_name', 'Philippines') }}"
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            />
-                            @error('country_name')
-                                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
+                            <input name="country_name" type="text" value="{{ old('country_name', 'Philippines') }}" class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-zinc-950 dark:text-white" />
                         </label>
-
                         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                             {{ __('Status') }}
-                            <select
-                                name="status"
-                                required
-                                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
-                            >
+                            <select name="status" required class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-zinc-950 dark:text-white">
                                 @foreach (['active', 'inactive', 'archived'] as $status)
                                     <option value="{{ $status }}" @selected(old('status', 'active') === $status)>{{ str($status)->headline() }}</option>
                                 @endforeach
                             </select>
-                            @error('status')
-                                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
                         </label>
                     </div>
 
                     <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                         {{ __('Team Logo') }}
-                        <input
-                            name="logo"
-                            type="file"
-                            accept="image/*"
-                            class="mt-2 block w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm file:mr-4 file:rounded-md file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white dark:file:bg-white dark:file:text-zinc-900"
-                        />
-                        <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Optional square JPG, PNG, SVG, or WEBP up to 2 MB.') }}</p>
+                        <input name="logo" type="file" accept=".jpg,.jpeg,.png,.webp" class="mt-2 block w-full text-sm" />
+                        <p class="mt-1 text-xs text-zinc-500">{{ __('JPG, PNG, or WEBP up to 2 MB.') }}</p>
                         @error('logo')
                             <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
                         @enderror
                     </label>
 
-                    <flux:button type="submit" variant="primary" class="w-full">
-                        {{ __('Create Team') }}
-                    </flux:button>
+                    <flux:button type="submit" variant="primary" class="w-full">{{ __('Create Team') }}</flux:button>
                 </form>
             </div>
         </flux:modal>

@@ -16,7 +16,7 @@
         'live' => 'bg-[#2f55b7] text-white',
         default => 'bg-zinc-100 text-zinc-700',
     };
-    $scoreInputVisible = $match->status === 'completed';
+    $scoreInputVisible = $match->isCompletedMatchStatus();
     $isSmallDayOneTrackedRow = \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match)
         || \App\Support\SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($match);
     $scheduleStatusLabel = match ($match->status) {
@@ -55,13 +55,14 @@
         },
     };
     $spiritScoresByScoredTeamId = $spiritScoresByScoredTeamId ?? collect();
+    $matchPdfExportIsFinal = $match->isCompletedMatchStatus();
 @endphp
 
 <x-layouts::app :title="__('Game Score')">
     <div class="space-y-6">
         <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
-            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div>
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
+                <div class="min-w-0 flex-1">
                     <a
                         href="{{ route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => $setupBackTab]) }}"
                         wire:navigate
@@ -90,24 +91,26 @@
                     </div>
                 </div>
 
-                <div class="flex flex-wrap gap-2">
+                <div class="flex w-full shrink-0 flex-col gap-2 lg:w-[13.5rem] lg:items-stretch">
                     @if ($tournament->is_public)
                         <a
                             href="{{ route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match]) }}"
                             target="_blank"
-                            rel="noreferrer"
-                            class="inline-flex items-center justify-center rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            rel="noopener noreferrer"
+                            class="inline-flex w-full items-center justify-center rounded-lg border border-neutral-300 px-4 py-2 text-center text-sm font-medium text-zinc-700 transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                         >
                             {{ __('Open Public Match') }}
                         </a>
                     @endif
                     <a
                         href="{{ route('admin.tournaments.matches.pdf', ['tournament' => $tournament, 'match' => $match]) }}"
-                        target="_blank"
-                        rel="noreferrer"
-                        class="inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 dark:border-neutral-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                        rel="noopener noreferrer"
+                        title="{{ $matchPdfExportIsFinal
+                            ? __('Final match result PDF. Includes spirit scores when they have been entered.')
+                            : __('Printable match and spirit score sheets (blank or with any scores entered so far).') }}"
+                        class="inline-flex w-full items-center justify-center rounded-lg border border-neutral-300 bg-white px-4 py-2 text-center text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 dark:border-neutral-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
                     >
-                        {{ __('Export match PDF') }}
+                        {{ $matchPdfExportIsFinal ? __('Export Match PDF') : __('Download MATCH/SPIRIT SCORE SHEETS') }}
                     </a>
                 </div>
             </div>
@@ -287,15 +290,14 @@
                             ->filter(fn ($member) => ! in_array(strtolower((string) $member->gender), ['male', 'female'], true))
                             ->values();
                         $sheetGenderGroups = collect([
-                            ['label' => __('MALE'), 'roster' => $sheetMaleMembers, 'minRows' => 20],
-                            ['label' => __('FEMALE'), 'roster' => $sheetFemaleMembers, 'minRows' => 10],
+                            ['label' => __('MALE'), 'roster' => $sheetMaleMembers],
+                            ['label' => __('FEMALE'), 'roster' => $sheetFemaleMembers],
                         ]);
 
                         if ($sheetOtherMembers->isNotEmpty()) {
                             $sheetGenderGroups->push([
                                 'label' => __('OTHER'),
                                 'roster' => $sheetOtherMembers,
-                                'minRows' => max($sheetOtherMembers->count(), 5),
                             ]);
                         }
                     @endphp
@@ -329,40 +331,31 @@
                                         </td>
                                     </tr>
 
-                                    @php
-                                        $rosterCount = $group['roster']->count();
-                                        $rowCount = max($rosterCount, $group['minRows']);
-                                    @endphp
-
-                                    @for ($i = 0; $i < $rowCount; $i++)
+                                    @foreach ($group['roster'] as $member)
                                         @php
-                                            $member = $group['roster']->get($i);
-                                            $stat = $member ? $sheetStatsByMember->get($member->id) : null;
+                                            $stat = $sheetStatsByMember->get($member->id);
                                         @endphp
                                         <tr class="border-b border-neutral-200 last:border-b-0 dark:border-neutral-800">
                                             <td class="w-10 border-r border-neutral-200 px-2 py-1 text-center text-xs text-zinc-500 dark:border-neutral-800 dark:text-zinc-400">
-                                                {{ $i + 1 }}
+                                                {{ $loop->iteration }}
                                             </td>
                                             <td class="border-r border-neutral-200 px-3 py-1 text-sm italic text-zinc-800 dark:border-neutral-800 dark:text-zinc-100">
-                                                {{ $member?->name ?? '' }}
+                                                {{ $member->name }}
                                             </td>
                                             <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
                                                 <input
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    @disabled(! $member)
-                                                    name="player_stats[{{ $member?->id }}][blocks]"
+                                                    name="player_stats[{{ $member->id }}][blocks]"
                                                     value="{{ $stat?->blocks }}"
-                                                    @if ($member)
-                                                        x-on:change="saveStat({{ $member->id }}, 'blocks', $event.target.value)"
-                                                        :class="{
-                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-blocks',
-                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-blocks',
-                                                            'opacity-60': busyKey === '{{ $member->id }}-blocks',
-                                                        }"
-                                                    @endif
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                    x-on:change="saveStat({{ $member->id }}, 'blocks', $event.target.value)"
+                                                    :class="{
+                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-blocks',
+                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-blocks',
+                                                        'opacity-60': busyKey === '{{ $member->id }}-blocks',
+                                                    }"
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
                                             <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
@@ -370,18 +363,15 @@
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    @disabled(! $member)
-                                                    name="player_stats[{{ $member?->id }}][assists]"
+                                                    name="player_stats[{{ $member->id }}][assists]"
                                                     value="{{ $stat?->assists }}"
-                                                    @if ($member)
-                                                        x-on:change="saveStat({{ $member->id }}, 'assists', $event.target.value)"
-                                                        :class="{
-                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists',
-                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists',
-                                                            'opacity-60': busyKey === '{{ $member->id }}-assists',
-                                                        }"
-                                                    @endif
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                    x-on:change="saveStat({{ $member->id }}, 'assists', $event.target.value)"
+                                                    :class="{
+                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists',
+                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists',
+                                                        'opacity-60': busyKey === '{{ $member->id }}-assists',
+                                                    }"
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
                                             <td class="w-20 px-1 py-0.5 text-center">
@@ -389,22 +379,19 @@
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    @disabled(! $member)
-                                                    name="player_stats[{{ $member?->id }}][goals]"
+                                                    name="player_stats[{{ $member->id }}][goals]"
                                                     value="{{ $stat?->goals }}"
-                                                    @if ($member)
-                                                        x-on:change="saveStat({{ $member->id }}, 'goals', $event.target.value)"
-                                                        :class="{
-                                                            'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-goals',
-                                                            'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-goals',
-                                                            'opacity-60': busyKey === '{{ $member->id }}-goals',
-                                                        }"
-                                                    @endif
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none disabled:cursor-not-allowed dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
+                                                    x-on:change="saveStat({{ $member->id }}, 'goals', $event.target.value)"
+                                                    :class="{
+                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-goals',
+                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-goals',
+                                                        'opacity-60': busyKey === '{{ $member->id }}-goals',
+                                                    }"
+                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
                                         </tr>
-                                    @endfor
+                                    @endforeach
                                 @endforeach
                             </tbody>
                         </table>
@@ -412,11 +399,116 @@
                 @endforeach
             </div>
 
+            <script>
+                window.adminSpiritTeamSheet = function (config) {
+                    return {
+                        patchUrl: config.patchUrl,
+                        csrf: config.csrf,
+                        knowledge_rules_score: String(config.initial.knowledge_rules_score ?? ''),
+                        fouls_body_contact_score: String(config.initial.fouls_body_contact_score ?? ''),
+                        fair_mindedness_score: String(config.initial.fair_mindedness_score ?? ''),
+                        positive_attitude_score: String(config.initial.positive_attitude_score ?? ''),
+                        communication_respect_score: String(config.initial.communication_respect_score ?? ''),
+                        notes: String(config.initial.notes ?? ''),
+                        saveStatus: 'idle',
+                        saveMessage: '',
+                        debounceMs: 480,
+                        _timer: null,
+                        get spiritTotalDisplay() {
+                            const keys = ['knowledge_rules_score', 'fouls_body_contact_score', 'fair_mindedness_score', 'positive_attitude_score', 'communication_respect_score'];
+                            let sum = 0;
+                            let any = false;
+                            for (const k of keys) {
+                                const v = this[k];
+                                if (v === '' || v === null || v === undefined) {
+                                    continue;
+                                }
+                                const n = Number(v);
+                                if (Number.isNaN(n)) {
+                                    continue;
+                                }
+                                sum += n;
+                                any = true;
+                            }
+                            return any ? String(sum) : '—';
+                        },
+                        init() {
+                            this.$watch(
+                                () => [
+                                    this.knowledge_rules_score,
+                                    this.fouls_body_contact_score,
+                                    this.fair_mindedness_score,
+                                    this.positive_attitude_score,
+                                    this.communication_respect_score,
+                                    this.notes,
+                                ].join('|'),
+                                () => this.scheduleSave(),
+                            );
+                        },
+                        scheduleSave() {
+                            clearTimeout(this._timer);
+                            this.saveStatus = 'saving';
+                            this.saveMessage = config.savingText;
+                            this._timer = setTimeout(() => this.persist(), this.debounceMs);
+                        },
+                        nullIfEmpty(value) {
+                            if (value === '' || value === null || value === undefined) {
+                                return null;
+                            }
+                            const n = Number(value);
+                            return Number.isNaN(n) ? null : n;
+                        },
+                        async persist() {
+                            try {
+                                const payload = {
+                                    scored_team_id: config.scoredTeamId,
+                                    scoring_team_id: config.scoringTeamId,
+                                    knowledge_rules_score: this.nullIfEmpty(this.knowledge_rules_score),
+                                    fouls_body_contact_score: this.nullIfEmpty(this.fouls_body_contact_score),
+                                    fair_mindedness_score: this.nullIfEmpty(this.fair_mindedness_score),
+                                    positive_attitude_score: this.nullIfEmpty(this.positive_attitude_score),
+                                    communication_respect_score: this.nullIfEmpty(this.communication_respect_score),
+                                    notes: this.notes === '' ? null : this.notes,
+                                };
+                                const response = await fetch(this.patchUrl, {
+                                    method: 'PATCH',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        Accept: 'application/json',
+                                        'X-CSRF-TOKEN': this.csrf,
+                                        'X-Requested-With': 'XMLHttpRequest',
+                                    },
+                                    body: JSON.stringify(payload),
+                                });
+                                const data = await response.json().catch(() => ({}));
+                                if (!response.ok) {
+                                    throw new Error(data.message || 'request-failed');
+                                }
+                                this.saveStatus = 'saved';
+                                this.saveMessage = data.message || config.savedText;
+                                setTimeout(() => {
+                                    if (this.saveStatus === 'saved') {
+                                        this.saveStatus = 'idle';
+                                        this.saveMessage = '';
+                                    }
+                                }, 2200);
+                            } catch (error) {
+                                console.error('spirit auto-save failed', error);
+                                this.saveStatus = 'error';
+                                this.saveMessage = config.errorText;
+                            }
+                        },
+                    };
+                };
+            </script>
+
             @include('admin.tournaments.partials.spirit-scoring-form', [
                 'tournament' => $tournament,
                 'match' => $match,
                 'homeTeam' => $homeTeam,
                 'awayTeam' => $awayTeam,
+                'homeRegistration' => $homeRegistration,
+                'awayRegistration' => $awayRegistration,
                 'spiritScoresByScoredTeamId' => $spiritScoresByScoredTeamId,
             ])
             @else

@@ -11,19 +11,13 @@
     $awayLabel = $awayName ?: $def['away_placeholder'];
     $hasScoreline = $match->home_score !== null && $match->away_score !== null;
     $completed = $match->status === 'completed' && $hasScoreline;
-    $homeWins = $completed && (int) $match->home_score > (int) $match->away_score;
-    $awayWins = $completed && (int) $match->away_score > (int) $match->home_score;
     $bothTeamsAssigned = $match->home_registration_id !== null && $match->away_registration_id !== null;
     $scoringUrl = route('admin.tournaments.matches.scoring', ['tournament' => $selectedTournament, 'match' => $match]);
     $bracketStatusOptions = \App\Support\AdminTournamentTabStatusPresentation::knockoutMatchStatusSelectOptions();
 @endphp
 
 <article
-    @class([
-        'flex flex-col rounded-xl border p-4 shadow-sm transition',
-        'border-emerald-300 bg-emerald-50/80 dark:border-emerald-800/70 dark:bg-emerald-950/30' => $completed,
-        'border-neutral-200 bg-zinc-50/80 dark:border-neutral-700 dark:bg-zinc-950/40' => ! $completed,
-    ])
+    class="flex flex-col rounded-xl border border-neutral-200 bg-zinc-50/80 p-4 shadow-sm transition dark:border-neutral-700 dark:bg-zinc-950/40"
 >
     <div class="flex flex-wrap items-start justify-between gap-2 border-b border-neutral-200/80 pb-2 dark:border-neutral-700/80">
         <div>
@@ -84,13 +78,7 @@
     </dl>
 
     <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <div
-            @class([
-                'rounded-lg border px-3 py-2.5',
-                'border-emerald-400 bg-emerald-100/90 dark:border-emerald-600 dark:bg-emerald-900/40' => $homeWins,
-                'border-neutral-200 bg-white dark:border-neutral-700 dark:bg-zinc-900' => ! $homeWins,
-            ])
-        >
+        <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'home') }}">
             <div class="flex flex-wrap items-center gap-2">
                 <span class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Home') }}</span>
                 @if ($def['home_rank'])
@@ -101,13 +89,7 @@
             </div>
             <div class="mt-1 text-sm font-semibold text-zinc-900 dark:text-white">{{ $homeLabel }}</div>
         </div>
-        <div
-            @class([
-                'rounded-lg border px-3 py-2.5',
-                'border-emerald-400 bg-emerald-100/90 dark:border-emerald-600 dark:bg-emerald-900/40' => $awayWins,
-                'border-neutral-200 bg-white dark:border-neutral-700 dark:bg-zinc-900' => ! $awayWins,
-            ])
-        >
+        <div class="{{ \App\Support\MatchTeamBoxResultPresentation::teamBoxClasses($match, 'away') }}">
             <div class="flex flex-wrap items-center gap-2">
                 <span class="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{{ __('Away') }}</span>
                 @if ($def['away_rank'])
