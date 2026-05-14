@@ -70,11 +70,11 @@
 @endif
 <table class="score-table">
     <colgroup>
-        <col style="width: 7%;">
-        <col style="width: 51%;">
-        <col style="width: 14%;">
-        <col style="width: 14%;">
-        <col style="width: 14%;">
+        <col style="width: 6%;">
+        <col style="width: 58%;">
+        <col style="width: 12%;">
+        <col style="width: 12%;">
+        <col style="width: 12%;">
     </colgroup>
     <thead>
         <tr class="team-header-row">

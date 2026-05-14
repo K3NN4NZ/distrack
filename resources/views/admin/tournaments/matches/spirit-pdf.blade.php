@@ -11,7 +11,7 @@
     <style>
         @page {
             size: A4 landscape;
-            margin: 5mm;
+            margin: 3mm;
         }
         * {
             box-sizing: border-box;
@@ -40,7 +40,7 @@
         .two-sheet-layout {
             width: 100%;
             border-collapse: separate;
-            border-spacing: 3mm 0;
+            border-spacing: 2px 0;
             table-layout: fixed;
         }
 
@@ -60,7 +60,7 @@
 
         .sheet-panel {
             width: 100%;
-            padding: 2.5mm;
+            padding: 2px;
             border: 1px solid #d9d9d9;
             box-sizing: border-box;
             background: #fff;
@@ -68,8 +68,8 @@
 
         .spirit-sheet-header {
             text-align: center;
-            margin: 0 0 5px 0;
-            padding: 0 0 4px 0;
+            margin: 0 0 2px 0;
+            padding: 0 0 2px 0;
             border-bottom: 1px solid #d9d9d9;
             line-height: 1.1;
         }
@@ -85,7 +85,7 @@
             max-width: 2.8in;
             width: 100%;
             height: auto;
-            margin: 0 auto 4px auto;
+            margin: 0 auto 1px auto;
             padding: 0;
             object-fit: contain;
         }
@@ -129,7 +129,7 @@
         .spirit-sheet th,
         .spirit-sheet td {
             border: 1px solid #333;
-            padding: 3px 5px;
+            padding: 2px;
             font-size: 8.5px;
             line-height: 1.12;
             vertical-align: top;
@@ -151,7 +151,7 @@
             font-weight: bold;
             text-align: center;
             font-size: 8.5px;
-            padding: 3px 5px;
+            padding: 2px;
         }
 
         .spirit-criteria-title {
@@ -174,7 +174,7 @@
             font-weight: bold;
             background: #f2f2f2;
             font-size: 8.5px;
-            padding: 3px 5px;
+            padding: 2px;
         }
 
         .spirit-captain-section {
@@ -207,7 +207,7 @@
         }
 
         .spirit-sheet-official-remarks {
-            margin-top: 8px;
+            margin-top: 3px;
             font-size: 8px;
             line-height: 1.15;
             page-break-inside: avoid;
@@ -222,8 +222,8 @@
 
         .spirit-sheet-signature-line {
             border-top: 1px solid #777;
-            height: 14px;
-            margin-top: 14px;
+            height: 8px;
+            margin-top: 8px;
         }
 
         .spirit-sheet-signature-caption {
