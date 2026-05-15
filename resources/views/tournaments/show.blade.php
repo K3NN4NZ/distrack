@@ -1,11 +1,11 @@
 @extends('layouts.public', ['title' => $tournament->name])
 
 @php
-    $timezoneNotice = match ($tournament->timezone) {
+    $scheduleTz = $scheduleDisplayTimezone ?? \App\Support\SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+
+    $timezoneNotice = match ($scheduleTz) {
         'Asia/Manila' => 'All times shown below are in Philippines (GMT+8) time.',
-        default => $tournament->timezone
-            ? "All times shown below are in {$tournament->timezone} time."
-            : 'All times shown below follow the published tournament schedule.',
+        default => 'All times shown below are in '.$scheduleTz.' time.',
     };
 
     $baseQuery = collect([
@@ -276,10 +276,10 @@
                                             <div class="space-y-2 border-zinc-200 text-center md:border-r md:pr-4">
                                                 @if ($match->scheduled_at)
                                                     <div class="text-sm font-semibold uppercase text-zinc-500">
-                                                        {{ strtoupper($match->scheduled_at->format('d M')) }}
+                                                        {{ strtoupper($match->scheduled_at->timezone($scheduleTz)->format('d M')) }}
                                                     </div>
                                                     <div class="text-2xl font-semibold text-zinc-500">
-                                                        {{ $match->scheduled_at->format('H:i') }}
+                                                        {{ $match->scheduled_at->timezone($scheduleTz)->format('H:i') }}
                                                     </div>
                                                 @else
                                                     <div class="text-sm font-semibold uppercase text-zinc-500">TBD</div>
@@ -459,10 +459,10 @@
                                                             <tr>
                                                                 <td class="min-w-[8.75rem] border-b border-r border-zinc-200 bg-white px-4 py-5 align-top text-center">
                                                                     <div class="text-[1.65rem] font-semibold leading-none text-slate-500">
-                                                                        {{ $slot['starts_at']->format('H:i') }}
+                                                                        {{ $slot['starts_at']->timezone($scheduleTz)->format('H:i') }}
                                                                     </div>
                                                                     <div class="mt-3 text-[1.65rem] font-semibold leading-none text-slate-500">
-                                                                        {{ $slot['ends_at']->format('H:i') }}
+                                                                        {{ $slot['ends_at']->timezone($scheduleTz)->format('H:i') }}
                                                                     </div>
                                                                 </td>
 
@@ -1311,10 +1311,10 @@
                                     <div class="mt-4 grid gap-4 md:grid-cols-[5.75rem_minmax(0,1fr)]">
                                         <div>
                                             <div class="text-sm font-semibold uppercase text-zinc-500">
-                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->format('d M')) : 'TBD' }}
+                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->timezone($scheduleTz)->format('d M')) : 'TBD' }}
                                             </div>
                                             <div class="text-2xl font-semibold text-zinc-500">
-                                                {{ $match->scheduled_at ? $match->scheduled_at->format('H:i') : 'TBD' }}
+                                                {{ $match->scheduled_at ? $match->scheduled_at->timezone($scheduleTz)->format('H:i') : 'TBD' }}
                                             </div>
 
                                             <span class="mt-3 inline-flex rounded-[0.55rem] px-3 py-1 text-xs font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
@@ -1484,10 +1484,10 @@
                                                     <div class="mt-4 grid grid-cols-[3.9rem_minmax(0,1fr)] gap-4">
                                                         <div>
                                                             <div class="text-[11px] font-semibold uppercase text-zinc-500">
-                                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->format('d M')) : 'TBD' }}
+                                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->timezone($scheduleTz)->format('d M')) : 'TBD' }}
                                                             </div>
                                                             <div class="mt-1 text-sm font-semibold text-zinc-400">
-                                                                {{ $match->scheduled_at ? $match->scheduled_at->format('H:i') : 'TBD' }}
+                                                                {{ $match->scheduled_at ? $match->scheduled_at->timezone($scheduleTz)->format('H:i') : 'TBD' }}
                                                             </div>
 
                                                             <span class="mt-3 inline-flex rounded-[0.55rem] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">
@@ -1585,10 +1585,10 @@
                                                     <div class="mt-4 grid grid-cols-[3.9rem_minmax(0,1fr)] gap-4">
                                                         <div>
                                                             <div class="text-[11px] font-semibold uppercase text-zinc-500">
-                                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->format('d M')) : 'TBD' }}
+                                                                {{ $match->scheduled_at ? strtoupper($match->scheduled_at->timezone($scheduleTz)->format('d M')) : 'TBD' }}
                                                             </div>
                                                             <div class="mt-1 text-sm font-semibold text-zinc-400">
-                                                                {{ $match->scheduled_at ? $match->scheduled_at->format('H:i') : 'TBD' }}
+                                                                {{ $match->scheduled_at ? $match->scheduled_at->timezone($scheduleTz)->format('H:i') : 'TBD' }}
                                                             </div>
 
                                                             <span class="mt-3 inline-flex rounded-[0.55rem] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.04em] {{ $statusClasses }}">

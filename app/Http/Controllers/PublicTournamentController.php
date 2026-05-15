@@ -6,7 +6,9 @@ use App\Models\MatchSpiritScore;
 use App\Models\Team;
 use App\Models\Tournament;
 use App\Models\TournamentMatch;
+use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -113,13 +115,20 @@ class PublicTournamentController extends Controller
                 ->orderBy('match_number'),
         ])->loadCount(['registrations', 'matches', 'pitches']);
 
+        $scheduleTz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+
         $scheduleDateOptions = $tournament->matches
-            ->filter(fn ($match) => $match->scheduled_at)
-            ->groupBy(fn ($match) => $match->scheduled_at->toDateString())
-            ->map(fn ($matches, $date) => [
-                'value' => $date,
-                'label' => $matches->first()->scheduled_at->format('d M'),
-            ])
+            ->filter(fn ($match) => $match->scheduled_at !== null)
+            ->groupBy(fn ($match): string => $this->matchLocalScheduleDateKey($match->scheduled_at, $scheduleTz))
+            ->map(function ($matches, string $date) use ($scheduleTz): array {
+                $first = $matches->sortBy(fn (TournamentMatch $m): int => (int) ($m->scheduled_at?->getTimestamp() ?? 0))->first();
+
+                return [
+                    'value' => $date,
+                    'label' => $first?->scheduled_at?->timezone($scheduleTz)->format('j M') ?? $date,
+                ];
+            })
+            ->sortKeys()
             ->values();
 
         $scheduleStageOptions = collect([
@@ -138,9 +147,12 @@ class PublicTournamentController extends Controller
             : 'all';
 
         $visibleMatches = $tournament->matches
-            ->filter(function ($match) use ($dateFilter, $stageFilter): bool {
-                if ($dateFilter !== 'all' && (! $match->scheduled_at || $match->scheduled_at->toDateString() !== $dateFilter)) {
-                    return false;
+            ->filter(function ($match) use ($dateFilter, $stageFilter, $scheduleTz): bool {
+                if ($dateFilter !== 'all') {
+                    $localKey = $this->matchLocalScheduleDateKey($match->scheduled_at, $scheduleTz);
+                    if ($localKey === null || $localKey !== $dateFilter) {
+                        return false;
+                    }
                 }
 
                 if ($stageFilter !== 'all' && $this->scheduleStageBucket($match->stage) !== $stageFilter) {
@@ -151,7 +163,7 @@ class PublicTournamentController extends Controller
             })
             ->values();
 
-        $scheduleTimetable = $this->buildScheduleTimetable($visibleMatches);
+        $scheduleTimetable = $this->buildScheduleTimetable($visibleMatches, $scheduleTz);
 
         $statsSummary = [
             'completed_matches' => $tournament->matches->where('status', 'completed')->count(),
@@ -332,7 +344,20 @@ class PublicTournamentController extends Controller
             'mvpFilters' => $mvpFilters,
             'mvpLeaderboard' => $mvpLeaderboard,
             'standings' => $standings,
+            'scheduleDisplayTimezone' => $scheduleTz,
         ]);
+    }
+
+    /**
+     * Calendar date (Y-m-d) for grouping public schedule filters in the tournament timezone.
+     */
+    protected function matchLocalScheduleDateKey(?CarbonInterface $scheduledAt, string $tournamentTimezone): ?string
+    {
+        if ($scheduledAt === null) {
+            return null;
+        }
+
+        return $scheduledAt->copy()->timezone($tournamentTimezone)->toDateString();
     }
 
     /**
@@ -340,7 +365,7 @@ class PublicTournamentController extends Controller
      *
      * @return array{columns: Collection<int, array<string, mixed>>, days: Collection<int, array<string, mixed>>}
      */
-    protected function buildScheduleTimetable(Collection $matches): array
+    protected function buildScheduleTimetable(Collection $matches, string $tournamentTimezone): array
     {
         $scheduledMatches = $matches
             ->filter(fn ($match) => $match->scheduled_at)
@@ -369,8 +394,8 @@ class PublicTournamentController extends Controller
             ->values();
 
         $days = $scheduledMatches
-            ->groupBy(fn ($match) => $match->scheduled_at->toDateString())
-            ->map(function (Collection $dayMatches, string $date) use ($columns): array {
+            ->groupBy(fn ($match): string => $this->matchLocalScheduleDateKey($match->scheduled_at, $tournamentTimezone))
+            ->map(function (Collection $dayMatches, string $date) use ($columns, $tournamentTimezone): array {
                 $slotStarts = $dayMatches
                     ->map(fn ($match) => $match->scheduled_at)
                     ->sortBy(fn ($scheduledAt) => $scheduledAt->getTimestamp())
@@ -406,7 +431,7 @@ class PublicTournamentController extends Controller
                         ->sortBy(fn ($match) => $match->scheduled_at?->getTimestamp())
                         ->first()
                         ?->scheduled_at
-                        ?->format('d M, D') ?? $date,
+                        ?->timezone($tournamentTimezone)->format('j M, D') ?? $date,
                     'slots' => $slots,
                 ];
             })
@@ -2267,7 +2292,9 @@ class PublicTournamentController extends Controller
             'backLink' => route('tournaments.show', array_filter([
                 'tournament' => $tournament,
                 'tab' => 'schedule',
-                'date' => $match->scheduled_at?->toDateString(),
+                'date' => $match->scheduled_at
+                    ? $this->matchLocalScheduleDateKey($match->scheduled_at, SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament))
+                    : null,
                 'stage' => $this->scheduleStageBucket($match->stage),
             ])),
             'matchStageBucket' => $this->scheduleStageBucket($match->stage),

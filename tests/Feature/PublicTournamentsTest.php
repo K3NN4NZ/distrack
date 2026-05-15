@@ -10,6 +10,7 @@ use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 
 test('public tournament board shows only public tournaments and applies filters', function () {
     $organizer = User::factory()->admin()->create([
@@ -1282,6 +1283,89 @@ test('public tournament schedule can filter group and bracket matches', function
         ->assertDontSee('Group Flyers');
 });
 
+test('public schedule date filters group by tournament timezone not utc date', function () {
+    $organizer = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $organizer->id,
+        'name' => 'Timezone Schedule Cup',
+        'slug' => 'timezone-schedule-cup',
+        'venue' => 'North Field',
+        'starts_at' => CarbonImmutable::parse('2026-05-16 12:00:00', 'Asia/Manila'),
+        'ends_at' => CarbonImmutable::parse('2026-05-17 18:00:00', 'Asia/Manila'),
+        'status' => 'live',
+        'city' => 'Manila',
+        'country_name' => 'Philippines',
+        'timezone' => 'Asia/Manila',
+        'division' => 'Mixed',
+        'is_public' => true,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Field 1',
+        'sort_order' => 1,
+        'is_active' => true,
+    ]);
+
+    $home = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'TZ Home',
+        'address' => 'Test',
+        'status' => 'active',
+    ]);
+
+    $away = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'TZ Away',
+        'address' => 'Test',
+        'status' => 'active',
+    ]);
+
+    $regHome = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $home->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+    ]);
+
+    $regAway = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $away->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+    ]);
+
+    $base = [
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $regHome->id,
+        'away_registration_id' => $regAway->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'status' => 'scheduled',
+    ];
+
+    // May 15 23:00 UTC → May 16 local (Asia/Manila).
+    TournamentMatch::query()->create(array_merge($base, [
+        'match_number' => 1,
+        'scheduled_at' => CarbonImmutable::parse('2026-05-15 23:00:00', 'UTC'),
+    ]));
+
+    // May 17 03:30 UTC → May 17 afternoon local — still calendar May 17 in Manila.
+    TournamentMatch::query()->create(array_merge($base, [
+        'match_number' => 2,
+        'scheduled_at' => CarbonImmutable::parse('2026-05-17 03:30:00', 'UTC'),
+    ]));
+
+    $this->get(route('tournaments.show', ['tournament' => $tournament, 'tab' => 'schedule']))
+        ->assertOk()
+        ->assertSee('16 May')
+        ->assertSee('17 May')
+        ->assertDontSee('15 May');
+});
+
 test('public tournament schedule renders the timetable overlay layout', function () {
     $organizer = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
@@ -1381,7 +1465,8 @@ test('public tournament schedule renders the timetable overlay layout', function
         'seed_number' => 9,
     ]);
 
-    $slotStart = now()->addDays(3)->setTime(8, 15);
+    // 00:15 UTC == 08:15 Asia/Manila (tournament display timezone).
+    $slotStart = CarbonImmutable::parse('2030-06-01 00:15:00', 'UTC');
 
     TournamentMatch::query()->create([
         'tournament_id' => $tournament->id,
