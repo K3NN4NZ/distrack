@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallTournamentTeamStanding;
+use App\Support\TournamentBracketAdvancer;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -2453,6 +2454,215 @@ test('admin can persist small tournament day 2 knockout bracket match status via
     expect($match->fresh()->status)->toBe('live');
 });
 
+test('admin can update small tournament day 2 knockout match time range', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Knockout Time Cup',
+        'slug' => 'knockout-time-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Time Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]);
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    $match = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 37)
+        ->where('stage', 'quarterfinal')
+        ->first();
+
+    expect($match)->not->toBeNull();
+
+    $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+    $date = $match->scheduled_at->timezone($tz)->toDateString();
+
+    $this->actingAs($admin)
+        ->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->patch(route('admin.tournaments.matches.time-range.update', [
+            'tournament' => $tournament,
+            'match' => $match,
+        ]), [
+            'start_time' => '10:15',
+            'end_time' => '11:00',
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'quarter-final',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', [
+            'tournament' => $tournament->id,
+            'tab' => 'quarter-final',
+        ]))
+        ->assertSessionHas('status', 'match-time-updated');
+
+    $match->refresh();
+
+    expect($match->scheduled_at->timezone($tz)->format('Y-m-d H:i'))->toBe($date.' 10:15')
+        ->and($match->scheduled_ends_at->timezone($tz)->format('Y-m-d H:i'))->toBe($date.' 11:00')
+        ->and(SmallDayTwoKnockoutBracket::matchTimeLabel($match, null, $tournament))->toBe('10:15am – 11:00am');
+});
+
+test('completed quarter finals auto-populate semi final team slots', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Semi Propagation Cup',
+        'slug' => 'semi-propagation-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect();
+
+    foreach (range(1, 8) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Semi Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        $registrations->push(TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]));
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    $completeQuarterFinal = static function (int $gameNumber, int $homeIndex, int $awayIndex, int $homeScore, int $awayScore) use ($tournament, $registrations): void {
+        $match = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('match_number', $gameNumber)
+            ->where('stage', 'quarterfinal')
+            ->first();
+
+        expect($match)->not->toBeNull();
+
+        $match->forceFill([
+            'home_registration_id' => $registrations[$homeIndex]->id,
+            'away_registration_id' => $registrations[$awayIndex]->id,
+            'status' => 'completed',
+            'home_score' => $homeScore,
+            'away_score' => $awayScore,
+        ])->save();
+    };
+
+    $completeQuarterFinal(37, 0, 7, 27, 24);
+    $completeQuarterFinal(38, 1, 6, 21, 7);
+    $completeQuarterFinal(39, 2, 5, 26, 14);
+    $completeQuarterFinal(40, 3, 4, 22, 17);
+
+    TournamentBracketAdvancer::syncFromCompletedMatches($tournament);
+
+    $game43 = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 43)
+        ->where('stage', 'semifinal')
+        ->first();
+
+    $game44 = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 44)
+        ->where('stage', 'semifinal')
+        ->first();
+
+    expect($game43)->not->toBeNull()
+        ->and($game44)->not->toBeNull()
+        ->and($game43->home_registration_id)->toBe($registrations[0]->id)
+        ->and($game43->away_registration_id)->toBe($registrations[3]->id)
+        ->and($game44->home_registration_id)->toBe($registrations[1]->id)
+        ->and($game44->away_registration_id)->toBe($registrations[2]->id);
+
+    $this->actingAs($admin)
+        ->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'semi-finals']))
+        ->assertOk()
+        ->assertSee('Semi Team '.$tournament->id.'-1', false)
+        ->assertSee('Semi Team '.$tournament->id.'-4', false);
+});
+
+test('admin cannot set knockout match end time before start time', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Knockout Time Invalid Cup',
+        'slug' => 'knockout-time-invalid-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Invalid Time Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+        ]);
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    $match = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 41)
+        ->where('stage', 'placement')
+        ->first();
+
+    expect($match)->not->toBeNull();
+
+    $this->actingAs($admin)
+        ->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'quarter-final']))
+        ->patch(route('admin.tournaments.matches.time-range.update', [
+            'tournament' => $tournament,
+            'match' => $match,
+        ]), [
+            'start_time' => '14:00',
+            'end_time' => '13:30',
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'quarter-final',
+        ])
+        ->assertSessionHasErrors('end_time');
+});
+
 test('small tournament placement knockout match can be marked completed without preset scores then persist player goals', function (): void {
     $admin = User::factory()->admin()->create();
     $scorekeeper = User::factory()->scorekeeper()->create();
@@ -4220,8 +4430,9 @@ test('scorekeepers can save spirit scores for a completed match', function () {
         ->assertOk()
         ->assertSee('Spirit Scoring', false)
         ->assertSee('Sam Spirit Home', false)
-        ->assertSee('Auto-save', false)
-        ->assertDontSee('Save Spirit Scores', false);
+        ->assertSee('Save Match Score', false)
+        ->assertSee('Save Spirit Score', false)
+        ->assertDontSee('Auto-save', false);
 });
 
 test('scorekeepers can auto-save partial spirit scores via JSON patch', function () {
@@ -4346,6 +4557,125 @@ test('scorekeepers can auto-save partial spirit scores via JSON patch', function
     ])->assertOk()->assertJsonPath('total_score', null);
 
     expect(MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $homeTeam->id)->exists())->toBeFalse();
+});
+
+test('scorekeepers can save spirit scores with the manual save button route', function () {
+    $admin = User::factory()->admin()->create();
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Spirit Save Cup',
+        'slug' => 'spirit-save-cup',
+        'venue' => 'Field',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Save Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Save Away',
+        'address' => 'Cebu',
+        'status' => 'active',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'name' => 'Home Spirit Captain',
+        'gender' => 'Female',
+        'role' => 'spirit_captain',
+    ]);
+
+    TeamMember::query()->create([
+        'team_id' => $awayTeam->id,
+        'name' => 'Away Spirit Captain',
+        'gender' => 'Male',
+        'role' => 'spirit_captain',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 18,
+        'scheduled_at' => now()->addDay(),
+        'status' => 'completed',
+        'home_score' => 8,
+        'away_score' => 7,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Save Spirit Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->patch(route('admin.tournaments.matches.scoring.spirit-score.update', [
+        'tournament' => $tournament,
+        'match' => $match,
+    ]), [
+        'spirit_scores' => [
+            $homeRegistration->id => [
+                'knowledge_rules_score' => 3,
+                'fouls_body_contact_score' => 2,
+                'fair_mindedness_score' => 3,
+                'positive_attitude_score' => 3,
+                'communication_respect_score' => 2,
+                'notes' => 'Saved from button',
+            ],
+            $awayRegistration->id => [
+                'knowledge_rules_score' => 2,
+                'fouls_body_contact_score' => 2,
+                'fair_mindedness_score' => 2,
+                'positive_attitude_score' => 2,
+                'communication_respect_score' => 2,
+                'notes' => null,
+            ],
+        ],
+    ])
+        ->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertSessionHas('status', 'spirit-score-saved');
+
+    $homeRow = MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $homeTeam->id)->first();
+    $awayRow = MatchSpiritScore::query()->where('match_id', $match->id)->where('scored_team_id', $awayTeam->id)->first();
+
+    expect($homeRow)->not->toBeNull();
+    expect($awayRow)->not->toBeNull();
+    expect($homeRow->total_score)->toBe(13);
+    expect($awayRow->total_score)->toBe(10);
+    expect($homeRow->notes)->toBe('Saved from button');
+    expect($homeRow->scoring_team_id)->toBe($awayTeam->id);
+    expect($awayRow->scoring_team_id)->toBe($homeTeam->id);
 });
 
 test('scorekeepers can download a match scoring PDF', function () {
@@ -5476,6 +5806,130 @@ test('completed match player assists and goals can be updated independently via 
     $match->refresh();
     expect($match->home_score)->toBe(7);
     expect($match->away_score)->toBe(0);
+});
+
+test('scorekeepers can save full player stats with the manual save button route', function () {
+    $scorekeeper = User::factory()->scorekeeper()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => User::factory()->admin()->create()->id,
+        'name' => 'Manual Save Stats Cup',
+        'slug' => 'manual-save-stats-cup',
+        'venue' => 'North Grounds',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Manual Save Home',
+        'address' => 'Pasig',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Manual Save Away',
+        'address' => 'Cebu City',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $homeMember = TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'name' => 'Manual Home Player',
+        'gender' => 'Male',
+        'role' => 'captain',
+    ]);
+
+    $awayMember = TeamMember::query()->create([
+        'team_id' => $awayTeam->id,
+        'name' => 'Manual Away Player',
+        'gender' => 'Female',
+        'role' => 'captain',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'match_number' => 1,
+        'status' => 'completed',
+        'home_score' => 0,
+        'away_score' => 0,
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'Manual Save Field',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => $scorekeeper->id,
+    ]);
+
+    $match->update(['pitch_id' => $pitch->id]);
+
+    $this->actingAs($scorekeeper);
+
+    $this->patch(route('admin.tournaments.matches.scoring.match-score.update', [
+        'tournament' => $tournament,
+        'match' => $match,
+    ]), [
+        'scores' => [
+            $homeRegistration->id => [
+                $homeMember->id => [
+                    'blocks' => 2,
+                    'assists' => 3,
+                    'scores' => 7,
+                ],
+            ],
+            $awayRegistration->id => [
+                $awayMember->id => [
+                    'blocks' => 1,
+                    'assists' => 2,
+                    'scores' => 4,
+                ],
+            ],
+        ],
+    ])
+        ->assertRedirect(route('admin.tournaments.matches.scoring', ['tournament' => $tournament, 'match' => $match]))
+        ->assertSessionHas('status', 'match-score-saved');
+
+    $homeStat = MatchPlayerStat::query()
+        ->where('match_id', $match->id)
+        ->where('team_member_id', $homeMember->id)
+        ->firstOrFail();
+
+    $awayStat = MatchPlayerStat::query()
+        ->where('match_id', $match->id)
+        ->where('team_member_id', $awayMember->id)
+        ->firstOrFail();
+
+    expect($homeStat->blocks)->toBe(2);
+    expect($homeStat->assists)->toBe(3);
+    expect($homeStat->goals)->toBe(7);
+    expect($awayStat->blocks)->toBe(1);
+    expect($awayStat->assists)->toBe(2);
+    expect($awayStat->goals)->toBe(4);
+
+    $match->refresh();
+    expect($match->home_score)->toBe(7);
+    expect($match->away_score)->toBe(4);
 });
 
 test('scorekeeper live scoring requires confirmation before replacing a manual scoreline', function () {

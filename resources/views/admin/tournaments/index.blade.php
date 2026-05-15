@@ -289,6 +289,9 @@
                         @case('match-status-updated')
                             {{ __('Match status updated.') }}
                             @break
+                        @case('match-time-updated')
+                            {{ __('Match time updated.') }}
+                            @break
                         @case('match-deleted')
                             {{ __('Match deleted successfully.') }}
                             @break

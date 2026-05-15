@@ -58,21 +58,23 @@
         <div>
             <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Spirit Scoring') }}</h2>
             <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                {{ __('Spirit scores save automatically when you change a value (short delay). Maximum total is 15 when all five criteria are set.') }}
+                {{ __('Spirit scores stay on this page until you click Save Spirit Score. Maximum total is 15 when all five criteria are set.') }}
             </p>
         </div>
-        <p class="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400" aria-live="polite">
-            {{ __('Auto-save') }}
-        </p>
     </div>
 
     @php
         $spiritErrorMessages = collect($errors->getMessages())
-            ->filter(fn (array $msgs, string $key): bool => str_starts_with($key, 'spirit.'))
+            ->filter(fn (array $msgs, string $key): bool => str_starts_with($key, 'spirit_scores.') || in_array($key, ['spirit', 'spirit_score'], true))
             ->flatten()
             ->merge(
                 $errors->has('spirit')
                     ? collect([$errors->first('spirit')])
+                    : collect(),
+            )
+            ->merge(
+                $errors->has('spirit_score')
+                    ? collect([$errors->first('spirit_score')])
                     : collect(),
             )
             ->unique()
@@ -89,7 +91,11 @@
         </div>
     @endif
 
-    <div class="mt-6 grid gap-6 lg:grid-cols-2">
+    <form method="POST" action="{{ route('admin.tournaments.matches.scoring.spirit-score.update', ['tournament' => $tournament, 'match' => $match]) }}" class="mt-6 space-y-6">
+        @csrf
+        @method('PATCH')
+
+        <div class="grid gap-6 lg:grid-cols-2">
         @foreach ([
             'home' => [
                 'team' => $homeTeam,
@@ -112,32 +118,37 @@
                 $record = $side['record'];
                 $captain = $side['captain'];
                 $registration = $side['registration'];
+                $registrationId = (string) ($registration?->id ?? '');
             @endphp
 
             <div
                 class="flex flex-col overflow-hidden rounded-xl border border-neutral-300 bg-zinc-50 shadow-sm dark:border-neutral-600 dark:bg-zinc-950"
-                data-match-id="{{ $match->id }}"
-                data-scored-registration-id="{{ $registration?->id }}"
-                data-scoring-registration-id="{{ $sideKey === 'home' ? $awayRegistration?->id : $homeRegistration?->id }}"
-                data-scored-team-id="{{ $team?->id }}"
-                data-scoring-team-id="{{ $opponent?->id }}"
-                x-data="window.adminSpiritTeamSheet({
-                    patchUrl: @js(route('admin.tournaments.matches.scoring.spirit-scores.patch', ['tournament' => $tournament, 'match' => $match])),
-                    csrf: @js(csrf_token()),
-                    scoredTeamId: {{ (int) ($team?->id ?? 0) }},
-                    scoringTeamId: {{ (int) ($opponent?->id ?? 0) }},
-                    initial: {
-                        knowledge_rules_score: @js(old('spirit.'.$sideKey.'.knowledge_rules_score', $record?->knowledge_rules_score !== null ? (string) $record->knowledge_rules_score : '')),
-                        fouls_body_contact_score: @js(old('spirit.'.$sideKey.'.fouls_body_contact_score', $record?->fouls_body_contact_score !== null ? (string) $record->fouls_body_contact_score : '')),
-                        fair_mindedness_score: @js(old('spirit.'.$sideKey.'.fair_mindedness_score', $record?->fair_mindedness_score !== null ? (string) $record->fair_mindedness_score : '')),
-                        positive_attitude_score: @js(old('spirit.'.$sideKey.'.positive_attitude_score', $record?->positive_attitude_score !== null ? (string) $record->positive_attitude_score : '')),
-                        communication_respect_score: @js(old('spirit.'.$sideKey.'.communication_respect_score', $record?->communication_respect_score !== null ? (string) $record->communication_respect_score : '')),
-                        notes: @js(old('spirit.'.$sideKey.'.notes', $record?->notes ?? '')),
+                x-data="{
+                    knowledge_rules_score: @js(old('spirit_scores.'.$registrationId.'.knowledge_rules_score', $record?->knowledge_rules_score !== null ? (string) $record->knowledge_rules_score : '')),
+                    fouls_body_contact_score: @js(old('spirit_scores.'.$registrationId.'.fouls_body_contact_score', $record?->fouls_body_contact_score !== null ? (string) $record->fouls_body_contact_score : '')),
+                    fair_mindedness_score: @js(old('spirit_scores.'.$registrationId.'.fair_mindedness_score', $record?->fair_mindedness_score !== null ? (string) $record->fair_mindedness_score : '')),
+                    positive_attitude_score: @js(old('spirit_scores.'.$registrationId.'.positive_attitude_score', $record?->positive_attitude_score !== null ? (string) $record->positive_attitude_score : '')),
+                    communication_respect_score: @js(old('spirit_scores.'.$registrationId.'.communication_respect_score', $record?->communication_respect_score !== null ? (string) $record->communication_respect_score : '')),
+                    notes: @js(old('spirit_scores.'.$registrationId.'.notes', $record?->notes ?? '')),
+                    get spiritTotalDisplay() {
+                        const keys = ['knowledge_rules_score', 'fouls_body_contact_score', 'fair_mindedness_score', 'positive_attitude_score', 'communication_respect_score'];
+                        let sum = 0;
+                        let any = false;
+                        for (const k of keys) {
+                            const v = this[k];
+                            if (v === '' || v === null || v === undefined) {
+                                continue;
+                            }
+                            const n = Number(v);
+                            if (Number.isNaN(n)) {
+                                continue;
+                            }
+                            sum += n;
+                            any = true;
+                        }
+                        return any ? String(sum) : '—';
                     },
-                    savingText: @js(__('Saving…')),
-                    savedText: @js(__('Saved')),
-                    errorText: @js(__('Error saving')),
-                })"
+                }"
             >
                 <div class="flex items-start justify-between gap-3 border-b border-neutral-300 bg-white px-4 py-3 dark:border-neutral-600 dark:bg-zinc-900">
                     <div class="min-w-0 flex-1 text-center">
@@ -149,18 +160,6 @@
                             {{ __('Game #:num', ['num' => $match->match_number ?? '—']) }}
                         </div>
                     </div>
-                    <div
-                        class="shrink-0 text-right text-xs font-medium"
-                        :class="{
-                            'text-zinc-500': saveStatus === 'idle',
-                            'text-amber-600': saveStatus === 'saving',
-                            'text-emerald-600': saveStatus === 'saved',
-                            'text-red-600': saveStatus === 'error',
-                        }"
-                        x-text="saveMessage"
-                        x-show="saveMessage"
-                        x-cloak
-                    ></div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -185,10 +184,11 @@
                                     </td>
                                     <td class="px-2 py-2 align-middle text-center">
                                         @php
-                                            $currentScore = old('spirit.'.$sideKey.'.'.$field, $record?->{$field});
+                                            $currentScore = old('spirit_scores.'.$registrationId.'.'.$field, $record?->{$field});
                                         @endphp
                                         <select
                                             x-model="{{ $field }}"
+                                            name="spirit_scores[{{ $registrationId }}][{{ $field }}]"
                                             class="h-9 w-full max-w-[5.5rem] rounded-md border border-neutral-300 bg-white px-2 text-center text-sm font-medium text-zinc-900 focus:border-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:border-neutral-600 dark:bg-zinc-950 dark:text-zinc-100"
                                         >
                                             <option value="" @selected($currentScore === null || $currentScore === '')>—</option>
@@ -213,6 +213,7 @@
                     <label class="block text-xs font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{{ __('Notes (optional)') }}</label>
                     <textarea
                         x-model="notes"
+                        name="spirit_scores[{{ $registrationId }}][notes]"
                         rows="2"
                         maxlength="1000"
                         class="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-neutral-500 focus:outline-none dark:border-neutral-600 dark:bg-zinc-900 dark:text-zinc-100"
@@ -232,5 +233,15 @@
                 </div>
             </div>
         @endforeach
-    </div>
+        </div>
+
+        <div class="flex justify-end">
+            <button
+                type="submit"
+                class="inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:border-neutral-600 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            >
+                {{ __('Save Spirit Score') }}
+            </button>
+        </div>
+    </form>
 </section>

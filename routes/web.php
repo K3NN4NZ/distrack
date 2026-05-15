@@ -63,7 +63,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::get('/{tournament}/matches/{match}/scoring', 'showMatchScoring')->name('matches.scoring');
                 Route::post('/{tournament}/matches/{match}/scoring', 'storeMatchScoreLog')->name('matches.scoring.store');
                 Route::delete('/{tournament}/matches/{match}/scoring/{scoreLog}', 'destroyMatchScoreLog')->name('matches.scoring.destroy');
+                Route::patch('/{tournament}/matches/{match}/scoring/match-score', 'updateMatchScore')->name('matches.scoring.match-score.update');
                 Route::patch('/{tournament}/matches/{match}/scoring/player-stats', 'updateMatchPlayerStat')->name('matches.scoring.player-stats.update');
+                Route::patch('/{tournament}/matches/{match}/scoring/spirit-score', 'updateMatchSpiritScore')->name('matches.scoring.spirit-score.update');
                 Route::post('/{tournament}/matches/{match}/scoring/spirit', 'storeMatchSpiritScores')->name('matches.scoring.spirit.store');
                 Route::patch('/{tournament}/matches/{match}/spirit-scores', 'patchMatchSpiritScores')->name('matches.scoring.spirit-scores.patch');
                 Route::get('/{tournament}/matches/{match}/pdf', 'exportMatchScoringPdf')->name('matches.pdf');
@@ -89,6 +91,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::post('/registrations', 'storeRegistration')->name('registrations.store');
                 Route::post('/matches/round-robin', 'generateRoundRobinMatches')->name('matches.round-robin.generate');
                 Route::patch('/{tournament}/matches/{match}/status', 'updateRoundRobinMatchStatus')->name('matches.status.update');
+                Route::patch('/{tournament}/matches/{match}/time-range', 'updateMatchTimeRange')->name('matches.time-range.update');
                 Route::post('/matches/crossover/generate', 'generateCrossoverSchedule')->name('matches.crossover.generate');
                 Route::post('/{tournament}/matches/quarter-finals/generate', 'generateQuarterFinalMatches')->name('matches.quarter-finals.generate');
                 Route::get('/{tournament}/pooling-board', 'poolingBoard')->name('pooling-board');

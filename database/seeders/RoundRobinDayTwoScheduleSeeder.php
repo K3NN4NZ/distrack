@@ -8,6 +8,8 @@ use Illuminate\Database\Seeder;
 use InvalidArgumentException;
 
 /**
+ * @deprecated Use {@see ExactTournamentOneScheduleSeeder} for the official tournament #1 sheet (Day 1 + Day 2 + bracket).
+ *
  * Creates Round Robin Day 2 fixtures (games continue after Day 1’s first 24 Berger slots; typically 25–36 for nine teams)
  * for tournament 1 on May 17, 2026.
  *

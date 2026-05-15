@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 /**
+ * @deprecated Use {@see ExactTournamentOneScheduleSeeder} for the official tournament #1 sheet (Day 1 games 1–26 + Day 2).
+ *
  * Seeds tournament #1 Day 1 Round Robin to match the official fixture list (games 1–24).
  *
  * Run: php artisan db:seed --class=RoundRobinDay1ScheduleSeeder

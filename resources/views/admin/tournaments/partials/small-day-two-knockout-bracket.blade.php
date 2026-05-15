@@ -136,7 +136,7 @@
                         <div class="rounded-xl border border-neutral-200/90 bg-zinc-50/60 p-4 dark:border-neutral-600 dark:bg-zinc-950/40">
                             <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200/80 pb-3 dark:border-neutral-700/80">
                                 <h4 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $row['label'] }}</h4>
-                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ $row['time_label'] }}</p>
+                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ SmallDayTwoKnockoutBracket::scheduleRowTimeLabel($byGame, $qfRowGameNums, $row['time_label'], $selectedTournament) }}</p>
                             </div>
                             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                                 @foreach ($qfRowGameNums as $gameNum)
@@ -186,7 +186,7 @@
                         <div class="rounded-xl border border-neutral-200/90 bg-zinc-50/60 p-4 dark:border-neutral-600 dark:bg-zinc-950/40">
                             <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200/80 pb-3 dark:border-neutral-700/80">
                                 <h4 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $row['label'] }}</h4>
-                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ $row['time_label'] }}</p>
+                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ SmallDayTwoKnockoutBracket::scheduleRowTimeLabel($byGame, $rpRowGameNums, $row['time_label'], $selectedTournament) }}</p>
                             </div>
                             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                                 @foreach ($rpRowGameNums as $gameNum)
@@ -242,7 +242,7 @@
                         <div class="rounded-xl border border-neutral-200/90 bg-zinc-50/60 p-4 dark:border-neutral-600 dark:bg-zinc-950/40">
                             <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200/80 pb-3 dark:border-neutral-700/80">
                                 <h4 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $row['label'] }}</h4>
-                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ $row['time_label'] }}</p>
+                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ SmallDayTwoKnockoutBracket::scheduleRowTimeLabel($byGame, $sfRowGameNums, $row['time_label'], $selectedTournament) }}</p>
                             </div>
                             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                                 @foreach ($sfRowGameNums as $gameNum)
@@ -298,7 +298,7 @@
                         <div class="rounded-xl border border-neutral-200/90 bg-zinc-50/60 p-4 dark:border-neutral-600 dark:bg-zinc-950/40">
                             <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200/80 pb-3 dark:border-neutral-700/80">
                                 <h4 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $row['label'] }}</h4>
-                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ $row['time_label'] }}</p>
+                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ SmallDayTwoKnockoutBracket::scheduleRowTimeLabel($byGame, $r58RowGameNums, $row['time_label'], $selectedTournament) }}</p>
                             </div>
                             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                                 @foreach ($r58RowGameNums as $gameNum)
@@ -352,7 +352,7 @@
                         <div class="rounded-xl border border-neutral-200/90 bg-zinc-50/60 p-4 dark:border-neutral-600 dark:bg-zinc-950/40">
                             <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-200/80 pb-3 dark:border-neutral-700/80">
                                 <h4 class="text-base font-semibold text-zinc-900 dark:text-white">{{ $row['label'] }}</h4>
-                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ $row['time_label'] }}</p>
+                                <p class="text-sm font-medium text-zinc-600 dark:text-zinc-300">{{ SmallDayTwoKnockoutBracket::scheduleRowTimeLabel($byGame, $r34RowGameNums, $row['time_label'], $selectedTournament) }}</p>
                             </div>
                             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                                 @foreach ($r34RowGameNums as $gameNum)

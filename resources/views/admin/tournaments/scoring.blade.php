@@ -56,6 +56,44 @@
     };
     $spiritScoresByScoredTeamId = $spiritScoresByScoredTeamId ?? collect();
     $matchPdfExportIsFinal = $match->isCompletedMatchStatus();
+    $scoreSheetConfigs = [
+        ['team' => $homeTeam, 'stats' => $homeStats, 'totalScore' => $match->home_score ?? 0, 'side' => 'home', 'registration' => $homeRegistration],
+        ['team' => $awayTeam, 'stats' => $awayStats, 'totalScore' => $match->away_score ?? 0, 'side' => 'away', 'registration' => $awayRegistration],
+    ];
+    $matchScoreInputState = [];
+    $matchScoreMemberSides = [];
+
+    foreach ($scoreSheetConfigs as &$scoreSheetConfig) {
+        $statsByMember = $scoreSheetConfig['stats']->keyBy('team_member_id');
+        $scoreSheetConfig['statsByMember'] = $statsByMember;
+
+        foreach (($scoreSheetConfig['team']?->members ?? collect()) as $member) {
+            $memberId = (string) $member->id;
+            $registrationId = (string) ($scoreSheetConfig['registration']?->id ?? '');
+            $stat = $statsByMember->get($member->id);
+
+            $matchScoreInputState[$memberId] = [
+                'blocks' => old("scores.{$registrationId}.{$memberId}.blocks", $stat?->blocks ?? ''),
+                'assists' => old("scores.{$registrationId}.{$memberId}.assists", $stat?->assists ?? ''),
+                'scores' => old("scores.{$registrationId}.{$memberId}.scores", $stat?->goals ?? ''),
+            ];
+            $matchScoreMemberSides[$memberId] = $scoreSheetConfig['side'];
+        }
+    }
+    unset($scoreSheetConfig);
+
+    $matchScorePreviewHome = 0;
+    $matchScorePreviewAway = 0;
+    foreach ($matchScoreInputState as $memberId => $inputRow) {
+        $goals = $inputRow['scores'];
+        $goalTotal = $goals === '' || $goals === null ? 0 : (int) $goals;
+
+        if (($matchScoreMemberSides[$memberId] ?? null) === 'home') {
+            $matchScorePreviewHome += $goalTotal;
+        } elseif (($matchScoreMemberSides[$memberId] ?? null) === 'away') {
+            $matchScorePreviewAway += $goalTotal;
+        }
+    }
 @endphp
 
 <x-layouts::app :title="__('Game Score')">
@@ -124,8 +162,14 @@
                         @case('score-play-deleted')
                             {{ __('Scoring play removed and totals rebuilt successfully.') }}
                             @break
+                        @case('match-score-saved')
+                            {{ __('Match score saved.') }}
+                            @break
                         @case('spirit-saved')
                             {{ __('Spirit scores saved successfully.') }}
+                            @break
+                        @case('spirit-score-saved')
+                            {{ __('Spirit score saved.') }}
                             @break
                         @default
                             {{ __('Saved.') }}
@@ -151,8 +195,8 @@
                 <div
                     class="text-center"
                     x-data="{
-                        headerHomeScore: {{ (int) ($match->home_score ?? 0) }},
-                        headerAwayScore: {{ (int) ($match->away_score ?? 0) }},
+                        headerHomeScore: {{ (int) $matchScorePreviewHome }},
+                        headerAwayScore: {{ (int) $matchScorePreviewAway }},
                     }"
                     x-on:match-score-updated.window="headerHomeScore = $event.detail.home; headerAwayScore = $event.detail.away"
                 >
@@ -223,75 +267,100 @@
             </section>
 
             @if ($scoreInputVisible)
-            <div
-                class="grid gap-6 sm:grid-cols-2"
-                x-data="{
-                    homeScore: {{ (int) ($match->home_score ?? 0) }},
-                    awayScore: {{ (int) ($match->away_score ?? 0) }},
-                    playerStatsUrl: @js(route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match])),
-                    csrfToken: document.querySelector('meta[name=\'csrf-token\']')?.getAttribute('content') ?? @js(csrf_token()),
-                    busyKey: null,
-                    savedKey: null,
-                    errorKey: null,
-                    async saveStat(memberId, field, rawValue) {
-                        if (! memberId) return;
+            @php
+                $matchScoreErrorMessages = collect($errors->getMessages())
+                    ->filter(fn (array $msgs, string $key): bool => str_starts_with($key, 'scores.') || $key === 'match_score')
+                    ->flatten()
+                    ->merge(
+                        $errors->has('match_score')
+                            ? collect([$errors->first('match_score')])
+                            : collect(),
+                    )
+                    ->unique()
+                    ->values();
+            @endphp
 
-                        const key = `${memberId}-${field}`;
-                        this.busyKey = key;
-                        this.errorKey = null;
+            @if ($matchScoreErrorMessages->isNotEmpty())
+                <section class="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">
+                    <ul class="list-inside list-disc space-y-1">
+                        @foreach ($matchScoreErrorMessages as $message)
+                            <li>{{ $message }}</li>
+                        @endforeach
+                    </ul>
+                </section>
+            @endif
 
-                        try {
-                            const response = await fetch(this.playerStatsUrl, {
-                                method: 'PATCH',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'Accept': 'application/json',
-                                    'X-CSRF-TOKEN': this.csrfToken,
-                                    'X-Requested-With': 'XMLHttpRequest',
-                                },
-                                credentials: 'same-origin',
-                                body: JSON.stringify({
-                                    team_member_id: memberId,
-                                    field: field,
-                                    value: rawValue === '' || rawValue === null ? 0 : Number(rawValue),
-                                }),
-                            });
-
-                            const responseText = await response.text();
-                            let data = {};
-
-                            try {
-                                data = responseText ? JSON.parse(responseText) : {};
-                            } catch (_error) {
-                                data = {};
+            <script>
+                window.adminMatchScoreSheet = function (config) {
+                    return {
+                        homeScore: Number(config.initialHomeScore ?? 0),
+                        awayScore: Number(config.initialAwayScore ?? 0),
+                        playerStats: config.playerStats ?? {},
+                        memberSides: config.memberSides ?? {},
+                        init() {
+                            this.syncPreview();
+                        },
+                        normalizeValue(value) {
+                            if (value === '' || value === null || value === undefined) {
+                                return 0;
                             }
 
-                            if (! response.ok) {
-                                console.error('player stat save failed', response.status, responseText);
-                                throw new Error('save-failed');
+                            const n = Number(value);
+
+                            return Number.isNaN(n) ? 0 : n;
+                        },
+                        handleInput(memberId, field, rawValue) {
+                            if (! this.playerStats[memberId]) {
+                                this.playerStats[memberId] = {
+                                    blocks: '',
+                                    assists: '',
+                                    scores: '',
+                                };
                             }
 
-                            this.homeScore = data.home_score;
-                            this.awayScore = data.away_score;
+                            this.playerStats[memberId][field] = rawValue;
+                            this.syncPreview();
+                        },
+                        syncPreview() {
+                            let home = 0;
+                            let away = 0;
+
+                            for (const [memberId, fields] of Object.entries(this.playerStats)) {
+                                const score = this.normalizeValue(fields?.scores);
+
+                                if (this.memberSides[memberId] === 'home') {
+                                    home += score;
+                                } else if (this.memberSides[memberId] === 'away') {
+                                    away += score;
+                                }
+                            }
+
+                            this.homeScore = home;
+                            this.awayScore = away;
                             window.dispatchEvent(new CustomEvent('match-score-updated', {
-                                detail: { home: data.home_score, away: data.away_score },
+                                detail: { home, away },
                             }));
-                            this.savedKey = key;
-                            setTimeout(() => { if (this.savedKey === key) this.savedKey = null; }, 1200);
-                        } catch (error) {
-                            console.error('player stat save failed', error);
-                            this.errorKey = key;
-                            setTimeout(() => { if (this.errorKey === key) this.errorKey = null; }, 2000);
-                        } finally {
-                            if (this.busyKey === key) this.busyKey = null;
-                        }
-                    },
-                }"
+                        },
+                    };
+                };
+            </script>
+
+            <form
+                method="POST"
+                action="{{ route('admin.tournaments.matches.scoring.match-score.update', ['tournament' => $tournament, 'match' => $match]) }}"
+                class="space-y-6"
+                x-data="window.adminMatchScoreSheet({
+                    initialHomeScore: {{ (int) $matchScorePreviewHome }},
+                    initialAwayScore: {{ (int) $matchScorePreviewAway }},
+                    playerStats: @js($matchScoreInputState),
+                    memberSides: @js($matchScoreMemberSides),
+                })"
             >
-                @foreach ([
-                    ['team' => $homeTeam, 'stats' => $homeStats, 'totalScore' => $match->home_score ?? 0, 'side' => 'home'],
-                    ['team' => $awayTeam, 'stats' => $awayStats, 'totalScore' => $match->away_score ?? 0, 'side' => 'away'],
-                ] as $sheet)
+                @csrf
+                @method('PATCH')
+
+                <div class="grid gap-6 sm:grid-cols-2">
+                @foreach ($scoreSheetConfigs as $sheet)
                     @php
                         $sheetTeam = $sheet['team'];
                         $sheetStatsByMember = $sheet['stats']->keyBy('team_member_id');
@@ -359,14 +428,9 @@
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    name="player_stats[{{ $member->id }}][blocks]"
-                                                    value="{{ $stat?->blocks }}"
-                                                    x-on:change="saveStat({{ $member->id }}, 'blocks', $event.target.value)"
-                                                    :class="{
-                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-blocks',
-                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-blocks',
-                                                        'opacity-60': busyKey === '{{ $member->id }}-blocks',
-                                                    }"
+                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][blocks]"
+                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.blocks', $stat?->blocks ?? '') }}"
+                                                    x-on:input="handleInput('{{ $member->id }}', 'blocks', $event.target.value)"
                                                     class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
@@ -375,14 +439,9 @@
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    name="player_stats[{{ $member->id }}][assists]"
-                                                    value="{{ $stat?->assists }}"
-                                                    x-on:change="saveStat({{ $member->id }}, 'assists', $event.target.value)"
-                                                    :class="{
-                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-assists',
-                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-assists',
-                                                        'opacity-60': busyKey === '{{ $member->id }}-assists',
-                                                    }"
+                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][assists]"
+                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.assists', $stat?->assists ?? '') }}"
+                                                    x-on:input="handleInput('{{ $member->id }}', 'assists', $event.target.value)"
                                                     class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
@@ -391,14 +450,9 @@
                                                     type="number"
                                                     min="0"
                                                     max="999"
-                                                    name="player_stats[{{ $member->id }}][goals]"
-                                                    value="{{ $stat?->goals }}"
-                                                    x-on:change="saveStat({{ $member->id }}, 'goals', $event.target.value)"
-                                                    :class="{
-                                                        'bg-emerald-50 dark:bg-emerald-950/40': savedKey === '{{ $member->id }}-goals',
-                                                        'bg-rose-50 dark:bg-rose-950/40': errorKey === '{{ $member->id }}-goals',
-                                                        'opacity-60': busyKey === '{{ $member->id }}-goals',
-                                                    }"
+                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][scores]"
+                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.scores', $stat?->goals ?? '') }}"
+                                                    x-on:input="handleInput('{{ $member->id }}', 'scores', $event.target.value)"
                                                     class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
                                                 >
                                             </td>
@@ -409,110 +463,17 @@
                         </table>
                     </section>
                 @endforeach
-            </div>
+                </div>
 
-            <script>
-                window.adminSpiritTeamSheet = function (config) {
-                    return {
-                        patchUrl: config.patchUrl,
-                        csrf: config.csrf,
-                        knowledge_rules_score: String(config.initial.knowledge_rules_score ?? ''),
-                        fouls_body_contact_score: String(config.initial.fouls_body_contact_score ?? ''),
-                        fair_mindedness_score: String(config.initial.fair_mindedness_score ?? ''),
-                        positive_attitude_score: String(config.initial.positive_attitude_score ?? ''),
-                        communication_respect_score: String(config.initial.communication_respect_score ?? ''),
-                        notes: String(config.initial.notes ?? ''),
-                        saveStatus: 'idle',
-                        saveMessage: '',
-                        debounceMs: 480,
-                        _timer: null,
-                        get spiritTotalDisplay() {
-                            const keys = ['knowledge_rules_score', 'fouls_body_contact_score', 'fair_mindedness_score', 'positive_attitude_score', 'communication_respect_score'];
-                            let sum = 0;
-                            let any = false;
-                            for (const k of keys) {
-                                const v = this[k];
-                                if (v === '' || v === null || v === undefined) {
-                                    continue;
-                                }
-                                const n = Number(v);
-                                if (Number.isNaN(n)) {
-                                    continue;
-                                }
-                                sum += n;
-                                any = true;
-                            }
-                            return any ? String(sum) : '—';
-                        },
-                        init() {
-                            this.$watch(
-                                () => [
-                                    this.knowledge_rules_score,
-                                    this.fouls_body_contact_score,
-                                    this.fair_mindedness_score,
-                                    this.positive_attitude_score,
-                                    this.communication_respect_score,
-                                    this.notes,
-                                ].join('|'),
-                                () => this.scheduleSave(),
-                            );
-                        },
-                        scheduleSave() {
-                            clearTimeout(this._timer);
-                            this.saveStatus = 'saving';
-                            this.saveMessage = config.savingText;
-                            this._timer = setTimeout(() => this.persist(), this.debounceMs);
-                        },
-                        nullIfEmpty(value) {
-                            if (value === '' || value === null || value === undefined) {
-                                return null;
-                            }
-                            const n = Number(value);
-                            return Number.isNaN(n) ? null : n;
-                        },
-                        async persist() {
-                            try {
-                                const payload = {
-                                    scored_team_id: config.scoredTeamId,
-                                    scoring_team_id: config.scoringTeamId,
-                                    knowledge_rules_score: this.nullIfEmpty(this.knowledge_rules_score),
-                                    fouls_body_contact_score: this.nullIfEmpty(this.fouls_body_contact_score),
-                                    fair_mindedness_score: this.nullIfEmpty(this.fair_mindedness_score),
-                                    positive_attitude_score: this.nullIfEmpty(this.positive_attitude_score),
-                                    communication_respect_score: this.nullIfEmpty(this.communication_respect_score),
-                                    notes: this.notes === '' ? null : this.notes,
-                                };
-                                const response = await fetch(this.patchUrl, {
-                                    method: 'PATCH',
-                                    headers: {
-                                        'Content-Type': 'application/json',
-                                        Accept: 'application/json',
-                                        'X-CSRF-TOKEN': this.csrf,
-                                        'X-Requested-With': 'XMLHttpRequest',
-                                    },
-                                    body: JSON.stringify(payload),
-                                });
-                                const data = await response.json().catch(() => ({}));
-                                if (!response.ok) {
-                                    throw new Error(data.message || 'request-failed');
-                                }
-                                this.saveStatus = 'saved';
-                                this.saveMessage = data.message || config.savedText;
-                                setTimeout(() => {
-                                    if (this.saveStatus === 'saved') {
-                                        this.saveStatus = 'idle';
-                                        this.saveMessage = '';
-                                    }
-                                }, 2200);
-                            } catch (error) {
-                                console.error('spirit auto-save failed', error);
-                                this.saveStatus = 'error';
-                                this.saveMessage = config.errorText;
-                            }
-                        },
-                    };
-                };
-            </script>
+                <div class="flex justify-end">
+                    <button
+                        type="submit"
+                        class="inline-flex items-center justify-center rounded-lg bg-[#2f55b7] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#26479b] focus:outline-none focus:ring-2 focus:ring-[#2f55b7]/40"
+                    >
+                        {{ __('Save Match Score') }}
+                    </button>
+                </div>
+            </form>
 
             @include('admin.tournaments.partials.spirit-scoring-form', [
                 'tournament' => $tournament,
@@ -647,3 +608,4 @@
         @endif
     </div>
 </x-layouts::app>
+

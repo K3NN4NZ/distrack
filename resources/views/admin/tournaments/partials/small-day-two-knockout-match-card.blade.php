@@ -1,10 +1,14 @@
 @php
+    use App\Support\SmallDayTwoKnockoutBracket;
+
     /** @var \App\Models\Tournament $selectedTournament */
     /** @var int $gameNum */
     /** @var array $def */
     /** @var \App\Models\TournamentMatch $match */
     $isAdmin = $isAdmin ?? false;
     $knockoutScheduleRedirectTab = $knockoutScheduleRedirectTab ?? 'quarter-final';
+    $matchTimeLabel = SmallDayTwoKnockoutBracket::matchTimeLabel($match, $def['time_label'] ?? null, $selectedTournament);
+    $knockoutTimeModalName = 'knockout-match-time-modal-'.$match->id;
     $homeName = $match->homeRegistration?->team?->name;
     $awayName = $match->awayRegistration?->team?->name;
     $homeLabel = $homeName ?: $def['home_placeholder'];
@@ -65,9 +69,20 @@
     </div>
 
     <dl class="mt-3 space-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-        <div class="flex flex-wrap gap-1">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
             <dt class="font-medium text-zinc-500 dark:text-zinc-500">{{ __('Time') }}</dt>
-            <dd>{{ $def['time_label'] }}</dd>
+            <dd>{{ $matchTimeLabel }}</dd>
+            @if ($isAdmin)
+                <flux:modal.trigger name="{{ $knockoutTimeModalName }}">
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md border border-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[#2f55b7] underline-offset-2 transition hover:bg-[#e9f0ff] hover:underline dark:text-[#9fb7f2] dark:hover:bg-[#2f55b7]/20"
+                    >
+                        <span aria-hidden="true">✎</span>
+                        {{ __('Edit') }}
+                    </button>
+                </flux:modal.trigger>
+            @endif
         </div>
         @if ($match->pitch)
             <div class="flex flex-wrap gap-1">
@@ -138,3 +153,12 @@
         {{ __('Stage') }}: {{ $match->stage }}
     </div>
 </article>
+
+@if ($isAdmin)
+    @include('admin.tournaments.partials.knockout-match-time-modal', [
+        'selectedTournament' => $selectedTournament,
+        'match' => $match,
+        'gameNum' => $gameNum,
+        'knockoutScheduleRedirectTab' => $knockoutScheduleRedirectTab,
+    ])
+@endif

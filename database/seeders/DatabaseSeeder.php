@@ -24,7 +24,11 @@ class DatabaseSeeder extends Seeder
             BombanaTeamSeeder::class,
             RingerTeamSeeder::class,
             TournamentOneRegistrationSeedingSeeder::class,
-            // Manual only: official Day 1 round-robin fixtures (games 1–24) for tournament 1 — registration IDs + markers.
+            // Manual only: official tournament #1 schedule (Day 1 + Day 2 + bracket, games 1–48).
+            // php artisan db:seed --class=ExactTournamentOneScheduleSeeder
+            // Manual only: complete all games 1–48 with scores, player stats, and spirit (requires schedule seeder first).
+            // php artisan db:seed --class=TournamentOneAllGamesCompletedScoreSeeder
+            // @deprecated RoundRobinDay1ScheduleSeeder / RoundRobinDayTwoScheduleSeeder — superseded by ExactTournamentOneScheduleSeeder.
             // php artisan db:seed --class=RoundRobinDay1ScheduleSeeder
             // Manual only: seeds MatchPlayerStat rows for round robin, quarter-finals, and Ranking Path (games 41–42 placement).
             // php artisan db:seed --class=TournamentGameRosterScoreSeeder

@@ -70,6 +70,114 @@ final class SmallDayTwoKnockoutBracket
         return ['championship', 'final', 'finals'];
     }
 
+    /**
+     * Stages allowed for admin bracket time-range edits (games 37–48).
+     *
+     * @return list<string>
+     */
+    public static function bracketStageAliasesForTimeEdit(): array
+    {
+        return array_values(array_unique(array_merge(
+            self::quarterFinalStageAliases(),
+            self::rankingPathStageAliases(),
+            self::semiFinalStageAliases(),
+            self::championshipStageAliases(),
+            ['ranking'],
+        )));
+    }
+
+    public static function matchHasEditableBracketStage(TournamentMatch $match): bool
+    {
+        return in_array((string) $match->stage, self::bracketStageAliasesForTimeEdit(), true);
+    }
+
+    /**
+     * Human-readable knockout slot time (e.g. {@code 11:40am – 12:20pm}).
+     */
+    public static function formatKnockoutTimeRange(?CarbonImmutable $start, ?CarbonImmutable $end, ?string $fallback = null): string
+    {
+        if ($start === null) {
+            return $fallback ?? '—';
+        }
+
+        $tz = $start->timezone;
+        $left = strtolower($start->timezone($tz)->format('g:ia'));
+
+        if ($end === null) {
+            return $left;
+        }
+
+        return $left.' – '.strtolower($end->timezone($tz)->format('g:ia'));
+    }
+
+    public static function matchTimeLabel(TournamentMatch $match, ?string $fallback = null, ?Tournament $tournament = null): string
+    {
+        $tournament ??= $match->relationLoaded('tournament') ? $match->tournament : null;
+        $tz = $tournament !== null
+            ? SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament)
+            : (string) config('app.timezone');
+
+        $start = $match->scheduled_at?->timezone($tz);
+        $end = $match->scheduled_ends_at?->timezone($tz);
+
+        return self::formatKnockoutTimeRange($start, $end, $fallback);
+    }
+
+    /**
+     * @return array{start_time: string, end_time: string}
+     */
+    public static function matchTimeFormDefaults(TournamentMatch $match, Tournament $tournament): array
+    {
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+        $gameNumber = (int) ($match->match_number ?? 0);
+        $def = self::gameDefinitions()[$gameNumber] ?? null;
+
+        $start = $match->scheduled_at?->timezone($tz);
+        $end = $match->scheduled_ends_at?->timezone($tz);
+
+        if ($start === null && is_array($def) && isset($def['scheduled_iso'])) {
+            $start = CarbonImmutable::parse((string) $def['scheduled_iso'], $tz);
+        }
+
+        if ($end === null && is_array($def) && isset($def['scheduled_ends_iso'])) {
+            $end = CarbonImmutable::parse((string) $def['scheduled_ends_iso'], $tz);
+        } elseif ($end === null && $start !== null) {
+            $end = $start->addMinutes(40);
+        }
+
+        return [
+            'start_time' => $start?->format('H:i') ?? '09:00',
+            'end_time' => $end?->format('H:i') ?? '10:00',
+        ];
+    }
+
+    /**
+     * @param  Collection<int, TournamentMatch>  $matchesByGameNumber
+     * @param  list<int>  $gameNumbers
+     */
+    public static function scheduleRowTimeLabel(
+        Collection $matchesByGameNumber,
+        array $gameNumbers,
+        string $fallback,
+        ?Tournament $tournament = null,
+    ): string {
+        foreach ($gameNumbers as $gameNumber) {
+            $match = $matchesByGameNumber->get((int) $gameNumber);
+            if ($match instanceof TournamentMatch) {
+                $def = self::gameDefinitions()[(int) $gameNumber] ?? null;
+                $defFallback = is_array($def) ? ($def['time_label'] ?? null) : null;
+
+                return self::matchTimeLabel(
+                    $match,
+                    is_string($defFallback) ? $defFallback : $fallback,
+                    $tournament,
+                );
+            }
+        }
+
+        return $fallback;
+    }
+
     public static function marker(int $gameNumber): string
     {
         return self::MARKER_PREFIX.'g='.$gameNumber.']]';
@@ -133,6 +241,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Quarter Final · Game 37'),
                 'time_label' => '11:40am – 12:20pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 11:40:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 12:20:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('Rank 1'),
                 'away_placeholder' => __('Rank 8'),
@@ -146,6 +255,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Quarter Final · Game 38'),
                 'time_label' => '11:40am – 12:20pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 11:40:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 12:20:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('Rank 2'),
                 'away_placeholder' => __('Rank 7'),
@@ -159,6 +269,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Quarter Final · Game 39'),
                 'time_label' => '12:05pm – 12:45pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 12:05:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 12:45:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('Rank 3'),
                 'away_placeholder' => __('Rank 6'),
@@ -172,6 +283,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Quarter Final · Game 40'),
                 'time_label' => '12:05pm – 12:45pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 12:05:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 12:45:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('Rank 4'),
                 'away_placeholder' => __('Rank 5'),
@@ -186,6 +298,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Ranking Path · Game 41'),
                 'time_label' => '12:50pm – 01:30pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 12:50:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 13:30:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('L37'),
                 'away_placeholder' => __('L40'),
@@ -200,6 +313,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Ranking Path · Game 42'),
                 'time_label' => '12:50pm – 01:30pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 12:50:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 13:30:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('L38'),
                 'away_placeholder' => __('L39'),
@@ -213,6 +327,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Semi Final · Game 43'),
                 'time_label' => '01:35pm – 02:15pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 13:35:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 14:15:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('W37'),
                 'away_placeholder' => __('W40'),
@@ -226,6 +341,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Semi Final · Game 44'),
                 'time_label' => '01:35pm – 02:15pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 13:35:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 14:15:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('W38'),
                 'away_placeholder' => __('W39'),
@@ -239,6 +355,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Ranking 5–8 · Game 45'),
                 'time_label' => '02:20pm – 03:00pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 14:20:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 15:00:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('W41'),
                 'away_placeholder' => __('W42'),
@@ -252,6 +369,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Ranking 7–8 · Game 46'),
                 'time_label' => '02:20pm – 03:00pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 14:20:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 15:00:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('L41'),
                 'away_placeholder' => __('L42'),
@@ -265,6 +383,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Ranking 3–4 · Game 47'),
                 'time_label' => '03:05pm – 04:05pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 15:05:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 16:05:00',
                 'pitch_slot' => 1,
                 'home_placeholder' => __('L43'),
                 'away_placeholder' => __('L44'),
@@ -278,6 +397,7 @@ final class SmallDayTwoKnockoutBracket
                 'round_label' => __('Championship'),
                 'time_label' => '03:20pm – 05:20pm',
                 'scheduled_iso' => self::SCHEDULE_DATE_ISO.' 15:20:00',
+                'scheduled_ends_iso' => self::SCHEDULE_DATE_ISO.' 17:20:00',
                 'pitch_slot' => 2,
                 'home_placeholder' => __('W43'),
                 'away_placeholder' => __('W44'),
@@ -510,6 +630,7 @@ final class SmallDayTwoKnockoutBracket
             foreach (self::gameDefinitions() as $gameNumber => $def) {
                 $pitch = $def['pitch_slot'] === 1 ? $pitch1 : $pitch2;
                 $scheduledAt = CarbonImmutable::parse($def['scheduled_iso'], $tz);
+                $scheduledEnd = CarbonImmutable::parse($def['scheduled_ends_iso'], $tz);
 
                 $criteria = [
                     'tournament_id' => $tournament->id,
@@ -532,9 +653,16 @@ final class SmallDayTwoKnockoutBracket
                     'pitch_assigned_by' => $existing?->pitch_assigned_by,
                     'stage' => $def['stage'],
                     'round_label' => $roundLabel,
-                    'scheduled_at' => $scheduledAt,
                     'notes' => self::marker($gameNumber),
                 ];
+
+                if ($existing === null || $existing->scheduled_at === null) {
+                    $base['scheduled_at'] = $scheduledAt;
+                }
+
+                if ($existing === null || $existing->scheduled_ends_at === null) {
+                    $base['scheduled_ends_at'] = $scheduledEnd;
+                }
 
                 if ($existing === null) {
                     $payload = array_merge($base, [
@@ -783,11 +911,7 @@ final class SmallDayTwoKnockoutBracket
             self::maybeAssignQuarterFinals($byNum, $byRank);
         }
 
-        // Ranking Path (41–42): same population pattern as Quarter Finals — explicit assignment pass from sources,
-        // then downstream bracket slots (43+) via propagateFromSources.
-        self::maybeAssignRankingPathFromQuarterFinalLosers($byNum);
-
-        self::propagateFromSources($byNum);
+        TournamentBracketAdvancer::syncFromCompletedMatches($tournament);
     }
 
     /**

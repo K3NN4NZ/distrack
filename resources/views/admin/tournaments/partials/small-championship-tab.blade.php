@@ -7,6 +7,9 @@
     $gameNum = 48;
     $def = $defs[$gameNum];
     $match = $byGame->get($gameNum);
+    $championshipTimeLabel = $match
+        ? SmallDayTwoKnockoutBracket::matchTimeLabel($match, $def['time_label'] ?? null, $selectedTournament)
+        : ($def['time_label'] ?? '—');
     $semisDecided = SmallDayTwoKnockoutBracket::semiFinals43Through44Decided($selectedTournament);
 @endphp
 
@@ -20,7 +23,7 @@
                 </p>
             </div>
             <p class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                {{ __('Time') }}: {{ $def['time_label'] }}
+                {{ __('Time') }}: {{ $championshipTimeLabel }}
             </p>
         </div>
 

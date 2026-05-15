@@ -141,7 +141,7 @@ class TournamentController extends Controller
             if (
                 $registrationCount < self::MINIMUM_BRACKET_TEAM_COUNT
                 && $normalizedTabForThreshold !== null
-                && in_array($normalizedTabForThreshold, ['quarter-final', 'championship'], true)
+                && in_array($normalizedTabForThreshold, ['quarter-final', 'semi-finals', 'championship'], true)
             ) {
                 SmallDayTwoKnockoutBracket::sync($selectedTournament);
                 $selectedTournament->unsetRelation('matches');
@@ -420,6 +420,263 @@ class TournamentController extends Controller
                 'match' => $match,
             ])
             ->with('status', 'spirit-saved');
+    }
+
+    /**
+     * Persist the full player scoring sheet for both teams.
+     */
+    public function updateMatchScore(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        if ($match->status !== 'completed') {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withInput()
+                ->withErrors([
+                    'match_score' => SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+                ]);
+        }
+
+        $match->loadMissing([
+            'homeRegistration.team.members',
+            'awayRegistration.team.members',
+        ]);
+
+        $registrations = collect([
+            $match->homeRegistration,
+            $match->awayRegistration,
+        ])->filter()->keyBy(fn (TournamentRegistration $registration): string => (string) $registration->id);
+
+        if ($registrations->count() < 2) {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withInput()
+                ->withErrors([
+                    'match_score' => __('This match needs both registered teams before match scores can be saved.'),
+                ]);
+        }
+
+        $allowedMemberIdsByRegistration = $registrations->mapWithKeys(
+            fn (TournamentRegistration $registration): array => [
+                (string) $registration->id => $registration->team?->members
+                    ?->pluck('id')
+                    ->map(fn (mixed $id): string => (string) $id)
+                    ->all() ?? [],
+            ],
+        );
+
+        $validator = Validator::make($request->all(), [
+            'scores' => ['nullable', 'array'],
+            'scores.*' => ['array'],
+            'scores.*.*' => ['array'],
+            'scores.*.*.blocks' => ['nullable', 'integer', 'min:0', 'max:999'],
+            'scores.*.*.assists' => ['nullable', 'integer', 'min:0', 'max:999'],
+            'scores.*.*.scores' => ['nullable', 'integer', 'min:0', 'max:999'],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $registrations, $allowedMemberIdsByRegistration): void {
+            $submittedScores = $request->input('scores', []);
+
+            if (! is_array($submittedScores)) {
+                return;
+            }
+
+            foreach ($submittedScores as $registrationId => $memberScores) {
+                $registrationKey = (string) $registrationId;
+
+                if (! $registrations->has($registrationKey)) {
+                    $validator->errors()->add('scores', __('One or more submitted team score groups do not belong to this match.'));
+
+                    continue;
+                }
+
+                if (! is_array($memberScores)) {
+                    $validator->errors()->add("scores.{$registrationId}", __('The submitted player score payload is invalid.'));
+
+                    continue;
+                }
+
+                $allowedMemberIds = $allowedMemberIdsByRegistration->get($registrationKey, []);
+
+                foreach ($memberScores as $memberId => $fields) {
+                    if (! in_array((string) $memberId, $allowedMemberIds, true)) {
+                        $validator->errors()->add(
+                            "scores.{$registrationId}.{$memberId}",
+                            __('One or more submitted players do not belong to the selected registration.'),
+                        );
+                    }
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($match, $registrations, $validated): void {
+            $allowedMemberIds = [];
+
+            foreach ($registrations as $registration) {
+                $members = $registration->team?->members ?? collect();
+
+                foreach ($members as $member) {
+                    $allowedMemberIds[] = $member->id;
+
+                    $input = data_get($validated, 'scores.'.$registration->id.'.'.$member->id, []);
+                    $blocks = (int) ($input['blocks'] ?? 0);
+                    $assists = (int) ($input['assists'] ?? 0);
+                    $goals = (int) ($input['scores'] ?? 0);
+
+                    $stat = MatchPlayerStat::query()->firstOrNew([
+                        'match_id' => $match->id,
+                        'team_member_id' => $member->id,
+                    ]);
+
+                    $stat->blocks = $blocks;
+                    $stat->assists = $assists;
+                    $stat->goals = $goals;
+
+                    if ($blocks === 0 && $assists === 0 && $goals === 0) {
+                        if ($stat->exists) {
+                            $stat->delete();
+                        }
+
+                        continue;
+                    }
+
+                    $stat->save();
+                }
+            }
+
+            MatchPlayerStat::query()
+                ->where('match_id', $match->id)
+                ->whereNotIn('team_member_id', $allowedMemberIds)
+                ->delete();
+
+            $this->syncMatchScoreFromPlayerStats($match);
+        });
+
+        return redirect()
+            ->route('admin.tournaments.matches.scoring', [
+                'tournament' => $tournament,
+                'match' => $match,
+            ])
+            ->with('status', 'match-score-saved');
+    }
+
+    /**
+     * Persist the full spirit scoring sheet for both teams.
+     */
+    public function updateMatchSpiritScore(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        if ($match->status !== 'completed') {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withInput()
+                ->withErrors([
+                    'spirit_score' => SmallFixedRoundRobinDayOneSchedule::scoringRequiresCompletedScheduleMessage($match),
+                ]);
+        }
+
+        $match->loadMissing([
+            'homeRegistration.team.members',
+            'awayRegistration.team.members',
+        ]);
+
+        $registrations = collect([
+            $match->homeRegistration,
+            $match->awayRegistration,
+        ])->filter()->keyBy(fn (TournamentRegistration $registration): string => (string) $registration->id);
+
+        if ($registrations->count() < 2) {
+            return redirect()
+                ->route('admin.tournaments.matches.scoring', [
+                    'tournament' => $tournament,
+                    'match' => $match,
+                ])
+                ->withInput()
+                ->withErrors([
+                    'spirit_score' => __('This match needs both registered teams before spirit scores can be saved.'),
+                ]);
+        }
+
+        $criterionRule = ['nullable', 'integer', Rule::in([1, 2, 3])];
+
+        $validator = Validator::make($request->all(), [
+            'spirit_scores' => ['nullable', 'array'],
+            'spirit_scores.*' => ['array'],
+            'spirit_scores.*.knowledge_rules_score' => $criterionRule,
+            'spirit_scores.*.fouls_body_contact_score' => $criterionRule,
+            'spirit_scores.*.fair_mindedness_score' => $criterionRule,
+            'spirit_scores.*.positive_attitude_score' => $criterionRule,
+            'spirit_scores.*.communication_respect_score' => $criterionRule,
+            'spirit_scores.*.notes' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $validator->after(function ($validator) use ($request, $registrations): void {
+            $submittedScores = $request->input('spirit_scores', []);
+
+            if (! is_array($submittedScores)) {
+                return;
+            }
+
+            foreach (array_keys($submittedScores) as $registrationId) {
+                if (! $registrations->has((string) $registrationId)) {
+                    $validator->errors()->add('spirit_scores', __('One or more submitted spirit score groups do not belong to this match.'));
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($tournament, $match, $registrations, $validated): void {
+            foreach ($registrations as $registration) {
+                $scoredTeam = $registration->team;
+                $opponentRegistration = $registrations->first(
+                    fn (TournamentRegistration $candidate): bool => $candidate->id !== $registration->id,
+                );
+                $scoringTeam = $opponentRegistration?->team;
+
+                if (! $scoredTeam || ! $scoringTeam) {
+                    continue;
+                }
+
+                $payload = array_merge([
+                    'knowledge_rules_score' => null,
+                    'fouls_body_contact_score' => null,
+                    'fair_mindedness_score' => null,
+                    'positive_attitude_score' => null,
+                    'communication_respect_score' => null,
+                    'notes' => null,
+                ], data_get($validated, 'spirit_scores.'.$registration->id, []));
+
+                $this->upsertMatchSpiritScoreRecord(
+                    $tournament,
+                    $match,
+                    $scoredTeam,
+                    $scoringTeam,
+                    $payload,
+                    $this->spiritCaptainMember($scoredTeam),
+                );
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.matches.scoring', [
+                'tournament' => $tournament,
+                'match' => $match,
+            ])
+            ->with('status', 'spirit-score-saved');
     }
 
     /**
@@ -3690,6 +3947,59 @@ class TournamentController extends Controller
                 $this->resolveTournamentRedirectParameters($request, $tournament),
             )
             ->with('status', 'match-status-updated');
+    }
+
+    /**
+     * Update start/end times for a small-tournament Day 2 knockout match (games 37–48).
+     * Preserves the existing calendar date; only the clock times change.
+     */
+    public function updateMatchTimeRange(Request $request, Tournament $tournament, TournamentMatch $match): RedirectResponse
+    {
+        $this->ensureTournamentOwnsMatch($tournament, $match);
+
+        abort_unless($tournament->registrations()->count() < self::MINIMUM_BRACKET_TEAM_COUNT, 404);
+        abort_unless(SmallDayTwoKnockoutBracket::isSmallDayTwoKnockoutScheduleRow($match), 404);
+        abort_unless(SmallDayTwoKnockoutBracket::matchHasEditableBracketStage($match), 404);
+
+        $validated = $request->validate([
+            'start_time' => ['required', 'date_format:H:i'],
+            'end_time' => ['required', 'date_format:H:i'],
+        ]);
+
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+
+        $date = $match->scheduled_at
+            ? $match->scheduled_at->timezone($tz)->toDateString()
+            : now($tz)->toDateString();
+
+        [$y, $m, $d] = array_map('intval', explode('-', $date, 3));
+        $startParts = explode(':', (string) $validated['start_time']);
+        $endParts = explode(':', (string) $validated['end_time']);
+        $startHour = (int) ($startParts[0] ?? 0);
+        $startMin = (int) ($startParts[1] ?? 0);
+        $endHour = (int) ($endParts[0] ?? 0);
+        $endMin = (int) ($endParts[1] ?? 0);
+
+        $start = CarbonImmutable::create($y, $m, $d, $startHour, $startMin, 0, $tz);
+        $end = CarbonImmutable::create($y, $m, $d, $endHour, $endMin, 0, $tz);
+
+        if (! $end->greaterThan($start)) {
+            throw ValidationException::withMessages([
+                'end_time' => __('End time must be after start time.'),
+            ]);
+        }
+
+        $match->update([
+            'scheduled_at' => $start->utc(),
+            'scheduled_ends_at' => $end->utc(),
+        ]);
+
+        return redirect()
+            ->route(
+                $this->resolveTournamentRedirectRoute($request),
+                $this->resolveTournamentRedirectParameters($request, $tournament),
+            )
+            ->with('status', 'match-time-updated');
     }
 
     /**
