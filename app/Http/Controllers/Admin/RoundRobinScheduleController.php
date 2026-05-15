@@ -31,6 +31,7 @@ class RoundRobinScheduleController extends Controller
 
         $validated = $request->validate([
             'day' => ['required', 'in:1,2'],
+            "{$p}.date" => ['nullable', 'date_format:Y-m-d'],
             "{$p}.round" => ['required', 'integer', 'min:1'],
             "{$p}.start_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             "{$p}.end_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
@@ -65,7 +66,7 @@ class RoundRobinScheduleController extends Controller
         $dayLocal = $day === '2'
             ? ManualRoundRobinSchedule::roundRobinDayTwoLocal($tournament)
             : ManualRoundRobinSchedule::roundRobinDayOneLocal($tournament);
-        $dateIso = $dayLocal->format('Y-m-d');
+        $dateIso = (string) ($slot['date'] ?? $dayLocal->format('Y-m-d'));
 
         $start = CarbonImmutable::parse($dateIso.' '.$slot['start_time'].':00', $tz);
         $end = CarbonImmutable::parse($dateIso.' '.$slot['end_time'].':00', $tz);
@@ -148,6 +149,7 @@ class RoundRobinScheduleController extends Controller
         $ignoreIds = array_values(array_filter([(int) $m1->id, (int) $m2->id], fn (int $id): bool => $id > 0));
 
         $validated = $request->validate([
+            "{$p}.date" => ['nullable', 'date_format:Y-m-d'],
             "{$p}.round" => ['required', 'integer', 'min:1'],
             "{$p}.start_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             "{$p}.end_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
@@ -249,8 +251,7 @@ class RoundRobinScheduleController extends Controller
                 ->withErrors(['schedule_row' => __('This schedule row is missing a start time in the database.')]);
         }
 
-        $dayLocal = $anchor->scheduled_at->timezone($tz)->startOfDay();
-        $dateIso = $dayLocal->format('Y-m-d');
+        $dateIso = (string) ($slotData['date'] ?? $anchor->scheduled_at->timezone($tz)->toDateString());
 
         $start = CarbonImmutable::parse($dateIso.' '.$slotData['start_time'].':00', $tz);
         $end = CarbonImmutable::parse($dateIso.' '.$slotData['end_time'].':00', $tz);
@@ -621,8 +622,12 @@ class RoundRobinScheduleController extends Controller
             return true;
         }
 
-        $dayLocal = $anchor->scheduled_at->timezone($tz)->startOfDay();
-        $dateIso = $dayLocal->format('Y-m-d');
+        $dateIso = trim((string) ($slotData['date'] ?? ''));
+
+        if ($dateIso === '') {
+            $dateIso = $anchor->scheduled_at->timezone($tz)->toDateString();
+        }
+
         $newStart = CarbonImmutable::parse($dateIso.' '.$slotData['start_time'].':00', $tz)->utc();
         $newEnd = CarbonImmutable::parse($dateIso.' '.$slotData['end_time'].':00', $tz)->utc();
 

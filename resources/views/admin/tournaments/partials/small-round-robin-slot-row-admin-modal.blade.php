@@ -45,6 +45,10 @@
                 <input type="hidden" name="{{ $hiddenName }}" value="{{ $hiddenValue }}">
             @endforeach
 
+            @if (filled($slotDateIso ?? null))
+                <input type="hidden" name="{{ $p }}[date]" value="{{ $slotDateIso }}">
+            @endif
+
             @if ($pitch1Match && $pitch2Match)
                 <input type="hidden" name="{{ $p }}[pitch1_match_id]" value="{{ (int) $pitch1Match->id }}">
                 <input type="hidden" name="{{ $p }}[pitch2_match_id]" value="{{ (int) $pitch2Match->id }}">

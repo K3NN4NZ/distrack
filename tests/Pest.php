@@ -23,6 +23,9 @@ pest()->extend(TestCase::class)
     ->in('Unit/TournamentReportBuilderTest.php');
 
 pest()->extend(TestCase::class)
+    ->in('Unit/ManualRoundRobinScheduleTest.php');
+
+pest()->extend(TestCase::class)
     ->in('Unit/TournamentPoolingTest.php');
 
 /*

@@ -17,7 +17,7 @@ class EnsureScorekeeperOwnsAssignedMatchPitch
     {
         $user = $request->user();
 
-        if ($user === null || ! $user->isScorekeeper()) {
+        if ($user === null || (! $user->isScorekeeper() && ! $user->isAdmin())) {
             abort(403);
         }
 
@@ -35,6 +35,10 @@ class EnsureScorekeeperOwnsAssignedMatchPitch
 
         if ($tournament !== null && (int) $match->tournament_id !== (int) $tournament->getKey()) {
             abort(404);
+        }
+
+        if ($user->isAdmin()) {
+            return $next($request);
         }
 
         if ($match->pitch_id === null) {

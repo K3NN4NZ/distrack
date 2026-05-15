@@ -16,6 +16,10 @@ use Illuminate\Support\Collection;
  */
 final class ManualRoundRobinSchedule
 {
+    public const DEFAULT_DAY_ONE_DATE_ISO = SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO;
+
+    public const DEFAULT_DAY_TWO_DATE_ISO = SmallFixedRoundRobinDayTwoSchedule::SCHEDULE_DATE_ISO;
+
     public static function normalizeTimezone(?string $timezone): string
     {
         $timezone = trim((string) $timezone);
@@ -51,10 +55,11 @@ final class ManualRoundRobinSchedule
      */
     public static function roundRobinDayOneLocal(Tournament $tournament): CarbonImmutable
     {
-        $tz = self::tournamentTimezone($tournament);
-        $base = $tournament->starts_at ?? $tournament->ends_at ?? CarbonImmutable::now($tz);
-
-        return CarbonImmutable::createFromInterface($base)->timezone($tz)->startOfDay();
+        return self::calendarDayFromTournamentField(
+            $tournament,
+            'starts_at',
+            self::DEFAULT_DAY_ONE_DATE_ISO,
+        );
     }
 
     /**
@@ -63,10 +68,13 @@ final class ManualRoundRobinSchedule
     public static function roundRobinDayTwoLocal(Tournament $tournament): CarbonImmutable
     {
         $d1 = self::roundRobinDayOneLocal($tournament);
-        $tz = self::tournamentTimezone($tournament);
 
         if ($tournament->ends_at !== null) {
-            $d2 = CarbonImmutable::createFromInterface($tournament->ends_at)->timezone($tz)->startOfDay();
+            $d2 = self::calendarDayFromTournamentField(
+                $tournament,
+                'ends_at',
+                self::DEFAULT_DAY_TWO_DATE_ISO,
+            );
 
             if (! $d2->equalTo($d1)) {
                 return $d2;
@@ -78,12 +86,42 @@ final class ManualRoundRobinSchedule
 
     public static function dayDateLabel(CarbonImmutable $dayLocal): string
     {
-        return $dayLocal->format('M j, Y');
+        return $dayLocal->format('F j, Y');
     }
 
     public static function dayDateIso(CarbonImmutable $dayLocal): string
     {
         return $dayLocal->format('Y-m-d');
+    }
+
+    /**
+     * Resolve a tournament calendar field as a date-only value in tournament-local time.
+     *
+     * This avoids shifting the displayed header backward when the stored timestamp represents
+     * midnight in another timezone or when the UI only cares about the calendar date.
+     */
+    public static function calendarDayFromTournamentField(
+        Tournament $tournament,
+        string $field,
+        string $fallbackDateIso,
+    ): CarbonImmutable {
+        $tz = self::tournamentTimezone($tournament);
+        $raw = trim((string) $tournament->getRawOriginal($field));
+
+        if ($raw !== '' && preg_match('/^\d{4}-\d{2}-\d{2}/', $raw, $m) === 1) {
+            return CarbonImmutable::parse($m[0], $tz)->startOfDay();
+        }
+
+        $value = $tournament->getAttribute($field);
+
+        if ($value instanceof \DateTimeInterface) {
+            return CarbonImmutable::parse(
+                CarbonImmutable::createFromInterface($value)->format('Y-m-d'),
+                $tz,
+            )->startOfDay();
+        }
+
+        return CarbonImmutable::parse($fallbackDateIso, $tz)->startOfDay();
     }
 
     /**

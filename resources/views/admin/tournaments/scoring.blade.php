@@ -228,6 +228,8 @@
                 x-data="{
                     homeScore: {{ (int) ($match->home_score ?? 0) }},
                     awayScore: {{ (int) ($match->away_score ?? 0) }},
+                    playerStatsUrl: @js(route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match])),
+                    csrfToken: document.querySelector('meta[name=\'csrf-token\']')?.getAttribute('content') ?? @js(csrf_token()),
                     busyKey: null,
                     savedKey: null,
                     errorKey: null,
@@ -239,14 +241,15 @@
                         this.errorKey = null;
 
                         try {
-                            const response = await fetch(@js(route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match])), {
+                            const response = await fetch(this.playerStatsUrl, {
                                 method: 'PATCH',
                                 headers: {
                                     'Content-Type': 'application/json',
                                     'Accept': 'application/json',
-                                    'X-CSRF-TOKEN': @js(csrf_token()),
+                                    'X-CSRF-TOKEN': this.csrfToken,
                                     'X-Requested-With': 'XMLHttpRequest',
                                 },
+                                credentials: 'same-origin',
                                 body: JSON.stringify({
                                     team_member_id: memberId,
                                     field: field,
@@ -254,11 +257,20 @@
                                 }),
                             });
 
+                            const responseText = await response.text();
+                            let data = {};
+
+                            try {
+                                data = responseText ? JSON.parse(responseText) : {};
+                            } catch (_error) {
+                                data = {};
+                            }
+
                             if (! response.ok) {
+                                console.error('player stat save failed', response.status, responseText);
                                 throw new Error('save-failed');
                             }
 
-                            const data = await response.json();
                             this.homeScore = data.home_score;
                             this.awayScore = data.away_score;
                             window.dispatchEvent(new CustomEvent('match-score-updated', {

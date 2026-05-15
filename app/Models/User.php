@@ -103,7 +103,7 @@ class User extends Authenticatable
      */
     public function canEnterScores(): bool
     {
-        return $this->isScorekeeper();
+        return $this->isAdmin() || $this->isScorekeeper();
     }
 
     /**

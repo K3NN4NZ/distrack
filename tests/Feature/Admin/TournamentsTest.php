@@ -2560,6 +2560,88 @@ test('small tournament placement knockout match can be marked completed without 
     expect(MatchPlayerStat::query()->where('match_id', $match->id)->count())->toBe(2);
 });
 
+test('admin can autosave player stats on scoring routes', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Admin Player Stat Cup',
+        'slug' => 'admin-player-stat-cup',
+        'venue' => 'North Grounds',
+        'status' => 'live',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Mix',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Admin Home',
+        'address' => 'Cagayan de Oro',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $teamOwner->id,
+        'name' => 'Admin Away',
+        'address' => 'Valencia',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+        'approved_at' => now(),
+        'approved_by' => $admin->id,
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+        'approved_at' => now(),
+        'approved_by' => $admin->id,
+    ]);
+
+    $homeMember = TeamMember::query()->create([
+        'team_id' => $homeTeam->id,
+        'name' => 'Admin Home Scorer',
+        'gender' => 'Male',
+        'role' => 'captain',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'match_number' => 62,
+        'status' => 'completed',
+        'home_score' => 0,
+        'away_score' => 0,
+    ]);
+
+    $url = route('admin.tournaments.matches.scoring.player-stats.update', ['tournament' => $tournament, 'match' => $match]);
+
+    $this->actingAs($admin)->patchJson($url, [
+        'team_member_id' => $homeMember->id,
+        'field' => 'goals',
+        'value' => 4,
+    ])->assertOk()->assertJson([
+        'ok' => true,
+        'home_score' => 4,
+        'away_score' => 0,
+    ]);
+
+    $match->refresh();
+
+    expect($match->home_score)->toBe(4)
+        ->and($match->away_score)->toBe(0);
+});
+
 test('generating quarter finals without finalized pooling shows validation error', function () {
     $admin = User::factory()->admin()->create();
 
