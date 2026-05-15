@@ -24,7 +24,7 @@ use RuntimeException;
  */
 final class ExactTournamentOneScheduleSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 4;
+    public const TOURNAMENT_ID = 1;
 
     public const DAY_ONE_DATE = '2026-05-16';
 

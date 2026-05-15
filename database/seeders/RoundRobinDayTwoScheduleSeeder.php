@@ -20,7 +20,7 @@ use InvalidArgumentException;
  */
 class RoundRobinDayTwoScheduleSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 4;
+    public const TOURNAMENT_ID = 1;
 
     public function run(): void
     {
