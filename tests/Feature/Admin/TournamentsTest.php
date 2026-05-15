@@ -15,6 +15,7 @@ use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallTournamentTeamStanding;
 use App\Support\TournamentBracketAdvancer;
+use App\Support\TournamentBracketSyncer;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -2520,6 +2521,107 @@ test('admin can update small tournament day 2 knockout match time range', functi
     expect($match->scheduled_at->timezone($tz)->format('Y-m-d H:i'))->toBe($date.' 10:15')
         ->and($match->scheduled_ends_at->timezone($tz)->format('Y-m-d H:i'))->toBe($date.' 11:00')
         ->and(SmallDayTwoKnockoutBracket::matchTimeLabel($match, null, $tournament))->toBe('10:15am – 11:00am');
+});
+
+test('quarter finals populate from final team standings when placeholder slots have scores', function (): void {
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => User::factory()->admin()->create()->id,
+        'name' => 'QF Standings Cup',
+        'slug' => 'qf-standings-cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    $registrations = collect();
+
+    foreach (range(1, 8) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'QF Standing Team '.$tournament->id.'-'.$number,
+            'address' => 'Testville',
+            'status' => 'active',
+        ]);
+
+        $registrations->push(TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+        ]));
+    }
+
+    $gameNumber = 1;
+
+    foreach ($registrations as $i => $home) {
+        foreach ($registrations->slice($i + 1) as $away) {
+            TournamentMatch::query()->create([
+                'tournament_id' => $tournament->id,
+                'pitch_id' => null,
+                'stage' => 'round_robin',
+                'round_label' => 'RR',
+                'match_number' => $gameNumber++,
+                'home_registration_id' => $home->id,
+                'away_registration_id' => $away->id,
+                'status' => 'completed',
+                'home_score' => 15,
+                'away_score' => 10,
+            ]);
+        }
+    }
+
+    SmallDayTwoKnockoutBracket::sync($tournament);
+
+    foreach ([37, 38, 39, 40] as $qfGame) {
+        $match = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('match_number', $qfGame)
+            ->where('stage', 'quarterfinal')
+            ->first();
+
+        expect($match)->not->toBeNull();
+
+        $match->forceFill([
+            'home_registration_id' => null,
+            'away_registration_id' => null,
+            'status' => 'completed',
+            'home_score' => 12,
+            'away_score' => 9,
+        ])->save();
+    }
+
+    $result = app(TournamentBracketSyncer::class)->syncQuarterFinalsFromStandings($tournament);
+
+    expect($result['updated'])->toBe(4)
+        ->and($result['skipped_locked'])->toBe(0);
+
+    $tournament->load(['matches.homeRegistration.team', 'matches.awayRegistration.team']);
+    $bundle = SmallTournamentTeamStanding::roundRobinTeamStanding($tournament);
+    expect($bundle['meta']['standings_status'])->toBe('final');
+
+    $ranked = $bundle['rows']->keyBy('rank');
+
+    foreach ([
+        37 => [1, 8],
+        38 => [2, 7],
+        39 => [3, 6],
+        40 => [4, 5],
+    ] as $gameNumber => [$homeRank, $awayRank]) {
+        $match = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('match_number', $gameNumber)
+            ->where('stage', 'quarterfinal')
+            ->first();
+
+        expect($match)->not->toBeNull()
+            ->and($match->home_registration_id)->toBe($ranked[$homeRank]['registration_id'])
+            ->and($match->away_registration_id)->toBe($ranked[$awayRank]['registration_id']);
+    }
 });
 
 test('completed quarter finals auto-populate semi final team slots', function (): void {

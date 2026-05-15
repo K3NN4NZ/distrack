@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\DB;
  */
 class Quarterfinals20ScoreSeeder extends Seeder
 {
-    public int $tournamentId = 1;
+    public int $tournamentId = 4;
 
     private const STAGE_QUARTERFINAL = 'quarterfinal';
 

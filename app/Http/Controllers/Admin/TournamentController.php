@@ -21,6 +21,7 @@ use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallFixedRoundRobinDayTwoSchedule;
 use App\Support\SmallRoundRobinUnsyncedFormWarnings;
 use App\Support\SmallTournamentTeamStanding;
+use App\Support\TournamentBracketSyncer;
 use App\Support\TournamentPooling;
 use App\Support\TournamentReportBuilder;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -1154,7 +1155,7 @@ class TournamentController extends Controller
         $match->loadMissing('tournament');
         $tournament = $match->tournament;
         if ($tournament !== null && $tournament->registrations()->count() < self::MINIMUM_BRACKET_TEAM_COUNT) {
-            SmallDayTwoKnockoutBracket::syncAfterResultChange($tournament, $match);
+            app(TournamentBracketSyncer::class)->syncAll($tournament);
         }
     }
 
@@ -3938,7 +3939,7 @@ class TournamentController extends Controller
         ]);
 
         if ($isSmallKnockoutBracket) {
-            SmallDayTwoKnockoutBracket::syncAfterResultChange($tournament, $match);
+            app(TournamentBracketSyncer::class)->syncAll($tournament);
         }
 
         return redirect()

@@ -711,7 +711,7 @@ final class SmallDayTwoKnockoutBracket
             return;
         }
 
-        self::applyStandingsAndPropagation($tournament);
+        app(TournamentBracketSyncer::class)->syncAll($tournament);
     }
 
     /**
@@ -890,73 +890,11 @@ final class SmallDayTwoKnockoutBracket
                 ->orderBy('id'),
         ]);
 
-        /** @var array<int, TournamentMatch> $byNum */
-        $byNum = self::bracketRowByGameNumber($tournament);
-
-        $bundle = SmallTournamentTeamStanding::roundRobinTeamStanding($tournament);
-        $rrFinal = ($bundle['meta']['standings_status'] ?? '') === 'final';
-
-        if ($rrFinal) {
-            $rows = $bundle['rows']->values()->filter(fn (array $r): bool => isset($r['rank']) && is_int($r['rank']) && $r['rank'] >= 1);
-
-            $byRank = [];
-            foreach ($rows->take(8) as $row) {
-                $rk = (int) ($row['rank'] ?? 0);
-                $regId = (int) ($row['registration_id'] ?? 0);
-                if ($rk >= 1 && $rk <= 8 && $regId > 0) {
-                    $byRank[$rk] = $regId;
-                }
-            }
-
-            self::maybeAssignQuarterFinals($byNum, $byRank);
-        }
-
-        TournamentBracketAdvancer::syncFromCompletedMatches($tournament);
+        app(TournamentBracketSyncer::class)->syncAll($tournament);
     }
 
     /**
-     * @param  array<int, TournamentMatch>  $byNum
-     * @param  array<int, int>  $byRank  registration_id by rank 1..8
-     */
-    private static function maybeAssignQuarterFinals(array $byNum, array $byRank): void
-    {
-        $pairs = [
-            37 => [1, 8],
-            38 => [2, 7],
-            39 => [3, 6],
-            40 => [4, 5],
-        ];
-
-        foreach ($pairs as $g => [$hr, $ar]) {
-            $m = $byNum[$g] ?? null;
-            if ($m === null) {
-                continue;
-            }
-
-            if (! self::canReplaceTeamSlots($m)) {
-                continue;
-            }
-
-            if ($m->home_registration_id !== null || $m->away_registration_id !== null) {
-                continue;
-            }
-
-            $homeId = $byRank[$hr] ?? null;
-            $awayId = $byRank[$ar] ?? null;
-
-            if (! $homeId || ! $awayId) {
-                continue;
-            }
-
-            $m->forceFill([
-                'home_registration_id' => $homeId,
-                'away_registration_id' => $awayId,
-            ])->save();
-        }
-    }
-
-    /**
-     * Assign Ranking Path slots from Quarter Final losers — mirrors {@see maybeAssignQuarterFinals} structure.
+     * Assign Ranking Path slots from Quarter Final losers.
      *
      * Game 41: loser of 37 vs loser of 40. Game 42: loser of 38 vs loser of 39.
      *
