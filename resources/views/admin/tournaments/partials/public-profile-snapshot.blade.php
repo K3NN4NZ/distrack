@@ -102,21 +102,31 @@
         </div>
 
         <div class="space-y-4">
-            <div class="overflow-hidden rounded-xl border border-neutral-200 bg-zinc-50 dark:border-neutral-700 dark:bg-zinc-950">
-                @if ($tournament->thumbnail_path)
+            @if ($tournament->logoUrl())
+                <div class="flex h-40 w-full items-center justify-center overflow-hidden">
+                    <img
+                        src="{{ $tournament->logoUrl() }}"
+                        alt="{{ $tournament->name }} {{ __('logo') }}"
+                        class="max-h-36 max-w-[min(100%,20rem)] object-contain"
+                    >
+                </div>
+            @elseif ($tournament->thumbnail_path)
+                <div class="overflow-hidden rounded-xl border border-neutral-200 bg-zinc-50 dark:border-neutral-700 dark:bg-zinc-950">
                     <img
                         src="{{ $tournament->thumbnail_path }}"
                         alt="{{ $tournament->name }}"
                         class="h-56 w-full object-cover"
                     >
-                @else
+                </div>
+            @else
+                <div class="overflow-hidden rounded-xl border border-neutral-200 bg-zinc-50 dark:border-neutral-700 dark:bg-zinc-950">
                     <div class="flex h-56 items-end bg-[linear-gradient(135deg,_#f97316_0%,_#facc15_60%,_#14b8a6_100%)] p-4">
                         <span class="rounded-full bg-black/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-white">
                             {{ $tournament->event_type ?: __('Tournament') }}
                         </span>
                     </div>
-                @endif
-            </div>
+                </div>
+            @endif
 
             <div class="rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
                 <div class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('Visibility') }}</div>

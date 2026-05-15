@@ -6,10 +6,12 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class TournamentMatch extends Model
 {
     use HasFactory;
+    use SoftDeletes;
 
     /**
      * Embedded in `notes` for crossover rows created by automatic crossover generation,
@@ -39,7 +41,7 @@ class TournamentMatch extends Model
     /**
      * @var list<string>
      */
-    protected $fillable = ['tournament_id', 'pitch_id', 'pitch_assigned_by', 'home_registration_id', 'away_registration_id', 'stage', 'round_label', 'match_number', 'scheduled_at', 'status', 'home_score', 'away_score', 'notes'];
+    protected $fillable = ['tournament_id', 'pitch_id', 'pitch_assigned_by', 'home_registration_id', 'away_registration_id', 'stage', 'round_label', 'match_number', 'scheduled_at', 'scheduled_ends_at', 'status', 'home_score', 'away_score', 'notes', 'schedule_slot_ulid'];
 
     /**
      * @return array<string, string>
@@ -49,6 +51,7 @@ class TournamentMatch extends Model
         return [
             'match_number' => 'integer',
             'scheduled_at' => 'immutable_datetime',
+            'scheduled_ends_at' => 'immutable_datetime',
             'home_score' => 'integer',
             'away_score' => 'integer',
         ];

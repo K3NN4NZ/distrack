@@ -5,6 +5,7 @@
     'fieldPrefix' => '',
     'defaults' => [],
     'hiddenFields' => [],
+    'existingLogoUrl' => null,
 ])
 
 @php
@@ -51,184 +52,289 @@
     $infoItems = $buildRows('info_labels', 'info_values', 'info_items');
     $organizerItems = $buildRows('organizer_labels', 'organizer_values', 'organizer_items');
     $linkItems = $buildRows('link_labels', 'link_urls', 'link_items', 'href');
+
+    $tournamentFormConfig = [
+        'provincesUrl' => route('locations.provinces'),
+        'citiesUrl' => route('locations.cities'),
+        'barangaysUrl' => route('locations.barangays'),
+        'infoLabelField' => $fieldName('info_labels'),
+        'infoValueField' => $fieldName('info_values'),
+        'organizerLabelField' => $fieldName('organizer_labels'),
+        'organizerValueField' => $fieldName('organizer_values'),
+        'linkLabelField' => $fieldName('link_labels'),
+        'linkUrlField' => $fieldName('link_urls'),
+        'pitchNamesField' => $fieldName('pitch_names'),
+        'pitchLabelWord' => (string) __('Pitch'),
+        'provinceCode' => (string) $fieldValue('province_code'),
+        'cityCode' => (string) $fieldValue('city_code'),
+        'barangayCode' => (string) $fieldValue('barangay_code'),
+        'provinceName' => (string) $fieldValue('province'),
+        'cityName' => (string) $fieldValue('city'),
+        'barangayName' => (string) $fieldValue('barangay'),
+        'countryName' => (string) $fieldValue('country_name', 'Philippines'),
+        'existingLogoUrl' => $existingLogoUrl,
+        'infoItems' => $infoItems,
+        'organizerItems' => $organizerItems,
+        'linkItems' => $linkItems,
+        'pitchCount' => (int) old($fieldName('number_of_pitches'), (int) ($defaults['number_of_pitches'] ?? 2)),
+        'pitchNames' => array_values((array) old($fieldName('pitch_names'), $defaults['pitch_names'] ?? [__('Pitch 1'), __('Pitch 2')])),
+    ];
 @endphp
+
+@once
+    <script>
+        document.addEventListener('alpine:init', () => {
+            if (window.__distrackTournamentFormAlpineRegistered) {
+                return;
+            }
+            window.__distrackTournamentFormAlpineRegistered = true;
+
+            Alpine.data('tournamentForm', (config) => ({
+                provincesUrl: config.provincesUrl,
+                citiesUrl: config.citiesUrl,
+                barangaysUrl: config.barangaysUrl,
+                infoLabelField: config.infoLabelField,
+                infoValueField: config.infoValueField,
+                organizerLabelField: config.organizerLabelField,
+                organizerValueField: config.organizerValueField,
+                linkLabelField: config.linkLabelField,
+                linkUrlField: config.linkUrlField,
+                pitchNamesField: config.pitchNamesField,
+                pitchLabelWord: config.pitchLabelWord,
+                provinces: [],
+                cities: [],
+                barangays: [],
+                provinceCode: config.provinceCode ?? '',
+                cityCode: config.cityCode ?? '',
+                barangayCode: config.barangayCode ?? '',
+                provinceName: config.provinceName ?? '',
+                cityName: config.cityName ?? '',
+                barangayName: config.barangayName ?? '',
+                countryName: config.countryName ?? 'Philippines',
+                existingLogoUrl: config.existingLogoUrl,
+                logoPreviewUrl: config.existingLogoUrl,
+                infoItems: Array.isArray(config.infoItems) ? [...config.infoItems] : [{ label: '', value: '' }],
+                organizerItems: Array.isArray(config.organizerItems) ? [...config.organizerItems] : [{ label: '', value: '' }],
+                linkItems: Array.isArray(config.linkItems) ? [...config.linkItems] : [{ label: '', value: '' }],
+                pitchCount: Number(config.pitchCount ?? 2),
+                pitchNames: Array.isArray(config.pitchNames) && config.pitchNames.length
+                    ? [...config.pitchNames]
+                    : [`${config.pitchLabelWord} 1`, `${config.pitchLabelWord} 2`],
+
+                updateTournamentLogoPreview(event) {
+                    const file = event.target.files && event.target.files[0];
+
+                    if (! file) {
+                        this.logoPreviewUrl = this.existingLogoUrl;
+
+                        return;
+                    }
+
+                    const reader = new FileReader();
+
+                    reader.onload = (e) => {
+                        this.logoPreviewUrl = e.target.result;
+                    };
+
+                    reader.readAsDataURL(file);
+                },
+
+                syncPitchNameFields() {
+                    let n = parseInt(this.pitchCount, 10);
+
+                    if (Number.isNaN(n)) {
+                        n = 1;
+                    }
+
+                    n = Math.min(10, Math.max(1, n));
+                    this.pitchCount = n;
+
+                    while (this.pitchNames.length < n) {
+                        this.pitchNames.push(this.pitchLabelWord + ' ' + (this.pitchNames.length + 1));
+                    }
+
+                    while (this.pitchNames.length > n) {
+                        this.pitchNames.pop();
+                    }
+                },
+
+                async init() {
+                    await this.loadProvinces();
+
+                    if (this.provinceCode) {
+                        await this.loadCities();
+                    }
+
+                    if (this.cityCode) {
+                        await this.loadBarangays();
+                    }
+
+                    this.syncSelectedNames();
+
+                    if (this.infoItems.length === 0) {
+                        this.infoItems = [{ label: '', value: '' }];
+                    }
+
+                    if (this.organizerItems.length === 0) {
+                        this.organizerItems = [{ label: '', value: '' }];
+                    }
+
+                    if (this.linkItems.length === 0) {
+                        this.linkItems = [{ label: '', value: '' }];
+                    }
+
+                    this.syncPitchNameFields();
+                },
+
+                async fetchOptions(url, params = {}) {
+                    const resource = new URL(url, window.location.origin);
+
+                    Object.entries(params).forEach(([key, value]) => {
+                        if (value) {
+                            resource.searchParams.set(key, value);
+                        }
+                    });
+
+                    const response = await fetch(resource, {
+                        headers: {
+                            Accept: 'application/json',
+                        },
+                    });
+
+                    if (!response.ok) {
+                        return [];
+                    }
+
+                    const payload = await response.json();
+
+                    return Array.isArray(payload.data) ? payload.data : [];
+                },
+
+                findName(options, code) {
+                    return options.find((option) => option.code === code)?.name ?? '';
+                },
+
+                findCode(options, name) {
+                    const target = (name ?? '').trim().toLowerCase();
+
+                    return options.find((option) => (option.name ?? '').trim().toLowerCase() === target)?.code ?? '';
+                },
+
+                syncSelectedNames() {
+                    this.provinceName = this.findName(this.provinces, this.provinceCode) || this.provinceName;
+                    this.cityName = this.findName(this.cities, this.cityCode) || this.cityName;
+                    this.barangayName = this.findName(this.barangays, this.barangayCode) || this.barangayName;
+                },
+
+                async loadProvinces() {
+                    this.provinces = await this.fetchOptions(this.provincesUrl);
+
+                    if (!this.provinceCode && this.provinceName) {
+                        this.provinceCode = this.findCode(this.provinces, this.provinceName);
+                    }
+
+                    this.provinceName = this.findName(this.provinces, this.provinceCode) || this.provinceName;
+                },
+
+                async loadCities() {
+                    this.cities = this.provinceCode
+                        ? await this.fetchOptions(this.citiesUrl, { province_code: this.provinceCode })
+                        : [];
+
+                    if (!this.cityCode && this.cityName) {
+                        this.cityCode = this.findCode(this.cities, this.cityName);
+                    }
+
+                    this.cityName = this.findName(this.cities, this.cityCode) || this.cityName;
+                },
+
+                async loadBarangays() {
+                    this.barangays = this.cityCode
+                        ? await this.fetchOptions(this.barangaysUrl, { city_code: this.cityCode })
+                        : [];
+
+                    if (!this.barangayCode && this.barangayName) {
+                        this.barangayCode = this.findCode(this.barangays, this.barangayName);
+                    }
+
+                    this.barangayName = this.findName(this.barangays, this.barangayCode) || this.barangayName;
+                },
+
+                async handleProvinceChange() {
+                    this.provinceName = this.findName(this.provinces, this.provinceCode);
+                    this.cityCode = '';
+                    this.cityName = '';
+                    this.barangayCode = '';
+                    this.barangayName = '';
+                    this.barangays = [];
+
+                    await this.loadCities();
+                },
+
+                async handleCityChange() {
+                    this.cityName = this.findName(this.cities, this.cityCode);
+                    this.barangayCode = '';
+                    this.barangayName = '';
+
+                    await this.loadBarangays();
+                },
+
+                handleBarangayChange() {
+                    this.barangayName = this.findName(this.barangays, this.barangayCode);
+                },
+
+                addInfoItem() {
+                    this.infoItems.push({ label: '', value: '' });
+                },
+
+                removeInfoItem(index) {
+                    if (this.infoItems.length === 1) {
+                        this.infoItems = [{ label: '', value: '' }];
+
+                        return;
+                    }
+
+                    this.infoItems.splice(index, 1);
+                },
+
+                addOrganizerItem() {
+                    this.organizerItems.push({ label: '', value: '' });
+                },
+
+                removeOrganizerItem(index) {
+                    if (this.organizerItems.length === 1) {
+                        this.organizerItems = [{ label: '', value: '' }];
+
+                        return;
+                    }
+
+                    this.organizerItems.splice(index, 1);
+                },
+
+                addLinkItem() {
+                    this.linkItems.push({ label: '', value: '' });
+                },
+
+                removeLinkItem(index) {
+                    if (this.linkItems.length === 1) {
+                        this.linkItems = [{ label: '', value: '' }];
+
+                        return;
+                    }
+
+                    this.linkItems.splice(index, 1);
+                },
+            }));
+        });
+    </script>
+@endonce
 
 <form
     method="POST"
     action="{{ $action }}"
+    enctype="multipart/form-data"
     class="space-y-4"
-    x-data="{
-        provincesUrl: @js(route('locations.provinces')),
-        citiesUrl: @js(route('locations.cities')),
-        barangaysUrl: @js(route('locations.barangays')),
-        infoLabelField: @js($fieldName('info_labels')),
-        infoValueField: @js($fieldName('info_values')),
-        organizerLabelField: @js($fieldName('organizer_labels')),
-        organizerValueField: @js($fieldName('organizer_values')),
-        linkLabelField: @js($fieldName('link_labels')),
-        linkUrlField: @js($fieldName('link_urls')),
-        provinces: [],
-        cities: [],
-        barangays: [],
-        provinceCode: @js((string) $fieldValue('province_code')),
-        cityCode: @js((string) $fieldValue('city_code')),
-        barangayCode: @js((string) $fieldValue('barangay_code')),
-        provinceName: @js((string) $fieldValue('province')),
-        cityName: @js((string) $fieldValue('city')),
-        barangayName: @js((string) $fieldValue('barangay')),
-        countryName: @js((string) $fieldValue('country_name', 'Philippines')),
-        infoItems: @js($infoItems),
-        organizerItems: @js($organizerItems),
-        linkItems: @js($linkItems),
-        async init() {
-            await this.loadProvinces();
-
-            if (this.provinceCode) {
-                await this.loadCities();
-            }
-
-            if (this.cityCode) {
-                await this.loadBarangays();
-            }
-
-            this.syncSelectedNames();
-
-            if (this.infoItems.length === 0) {
-                this.infoItems = [{ label: '', value: '' }];
-            }
-
-            if (this.organizerItems.length === 0) {
-                this.organizerItems = [{ label: '', value: '' }];
-            }
-
-            if (this.linkItems.length === 0) {
-                this.linkItems = [{ label: '', value: '' }];
-            }
-        },
-        async fetchOptions(url, params = {}) {
-            const resource = new URL(url, window.location.origin);
-
-            Object.entries(params).forEach(([key, value]) => {
-                if (value) {
-                    resource.searchParams.set(key, value);
-                }
-            });
-
-            const response = await fetch(resource, {
-                headers: {
-                    Accept: 'application/json',
-                },
-            });
-
-            if (!response.ok) {
-                return [];
-            }
-
-            const payload = await response.json();
-
-            return Array.isArray(payload.data) ? payload.data : [];
-        },
-        findName(options, code) {
-            return options.find((option) => option.code === code)?.name ?? '';
-        },
-        findCode(options, name) {
-            const target = (name ?? '').trim().toLowerCase();
-
-            return options.find((option) => (option.name ?? '').trim().toLowerCase() === target)?.code ?? '';
-        },
-        syncSelectedNames() {
-            this.provinceName = this.findName(this.provinces, this.provinceCode) || this.provinceName;
-            this.cityName = this.findName(this.cities, this.cityCode) || this.cityName;
-            this.barangayName = this.findName(this.barangays, this.barangayCode) || this.barangayName;
-        },
-        async loadProvinces() {
-            this.provinces = await this.fetchOptions(this.provincesUrl);
-
-            if (!this.provinceCode && this.provinceName) {
-                this.provinceCode = this.findCode(this.provinces, this.provinceName);
-            }
-
-            this.provinceName = this.findName(this.provinces, this.provinceCode) || this.provinceName;
-        },
-        async loadCities() {
-            this.cities = this.provinceCode
-                ? await this.fetchOptions(this.citiesUrl, { province_code: this.provinceCode })
-                : [];
-
-            if (!this.cityCode && this.cityName) {
-                this.cityCode = this.findCode(this.cities, this.cityName);
-            }
-
-            this.cityName = this.findName(this.cities, this.cityCode) || this.cityName;
-        },
-        async loadBarangays() {
-            this.barangays = this.cityCode
-                ? await this.fetchOptions(this.barangaysUrl, { city_code: this.cityCode })
-                : [];
-
-            if (!this.barangayCode && this.barangayName) {
-                this.barangayCode = this.findCode(this.barangays, this.barangayName);
-            }
-
-            this.barangayName = this.findName(this.barangays, this.barangayCode) || this.barangayName;
-        },
-        async handleProvinceChange() {
-            this.provinceName = this.findName(this.provinces, this.provinceCode);
-            this.cityCode = '';
-            this.cityName = '';
-            this.barangayCode = '';
-            this.barangayName = '';
-            this.barangays = [];
-
-            await this.loadCities();
-        },
-        async handleCityChange() {
-            this.cityName = this.findName(this.cities, this.cityCode);
-            this.barangayCode = '';
-            this.barangayName = '';
-
-            await this.loadBarangays();
-        },
-        handleBarangayChange() {
-            this.barangayName = this.findName(this.barangays, this.barangayCode);
-        },
-        addInfoItem() {
-            this.infoItems.push({ label: '', value: '' });
-        },
-        removeInfoItem(index) {
-            if (this.infoItems.length === 1) {
-                this.infoItems = [{ label: '', value: '' }];
-
-                return;
-            }
-
-            this.infoItems.splice(index, 1);
-        },
-        addOrganizerItem() {
-            this.organizerItems.push({ label: '', value: '' });
-        },
-        removeOrganizerItem(index) {
-            if (this.organizerItems.length === 1) {
-                this.organizerItems = [{ label: '', value: '' }];
-
-                return;
-            }
-
-            this.organizerItems.splice(index, 1);
-        },
-        addLinkItem() {
-            this.linkItems.push({ label: '', value: '' });
-        },
-        removeLinkItem(index) {
-            if (this.linkItems.length === 1) {
-                this.linkItems = [{ label: '', value: '' }];
-
-                return;
-            }
-
-            this.linkItems.splice(index, 1);
-        },
-    }"
+    x-data="tournamentForm(@js($tournamentFormConfig))"
     x-init="init()"
 >
     @csrf
@@ -240,7 +346,96 @@
     @endforeach
 
     <flux:input name="{{ $fieldName('name') }}" :label="__('Tournament Name')" :value="$fieldValue('name')" type="text" required />
+
+    @php
+        $logoFieldName = $fieldName('logo');
+        $logoInitials = str((string) $fieldValue('name'))->trim()->explode(' ')->filter()->take(2)->map(fn ($word) => str($word)->substr(0, 1))->implode('') ?: '?';
+    @endphp
+
+    <div class="space-y-2">
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            {{ __('Tournament Logo') }}
+            <input
+                type="file"
+                name="{{ $logoFieldName }}"
+                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                x-on:change="updateTournamentLogoPreview($event)"
+                class="mt-2 block w-full cursor-pointer rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 file:mr-3 file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-700 hover:file:bg-zinc-200 dark:border-neutral-700 dark:bg-zinc-950 dark:text-white dark:file:bg-zinc-800 dark:file:text-zinc-200"
+            >
+        </label>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400">
+            {{ __('JPG, PNG, or WebP. Maximum size 2 MB. Optional.') }}
+        </p>
+        @error($logoFieldName)
+            <p class="text-sm text-red-600">{{ $message }}</p>
+        @enderror
+        <div class="flex items-center gap-3">
+            <div class="flex h-28 w-32 shrink-0 items-center justify-center overflow-hidden">
+                <img
+                    x-show="logoPreviewUrl"
+                    x-bind:src="logoPreviewUrl"
+                    alt=""
+                    class="max-h-28 max-w-32 object-contain"
+                >
+                <span
+                    x-show="! logoPreviewUrl"
+                    class="text-base font-semibold text-zinc-400 dark:text-zinc-500"
+                >{{ $logoInitials }}</span>
+            </div>
+        </div>
+    </div>
+
     <flux:input name="{{ $fieldName('venue') }}" :label="__('Venue')" :value="$fieldValue('venue')" type="text" required />
+
+    <div class="space-y-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
+        <div>
+            <h3 class="text-base font-semibold text-zinc-900 dark:text-white">{{ __('Pitches / Playing Fields') }}</h3>
+            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                {{ __('Define how many fields this tournament uses. Names appear in round robin and other schedule pitch pickers.') }}
+            </p>
+        </div>
+
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            {{ __('Number of Pitches') }}
+            <input
+                type="number"
+                name="{{ $fieldName('number_of_pitches') }}"
+                min="1"
+                max="10"
+                x-model.number="pitchCount"
+                x-on:change="syncPitchNameFields()"
+                x-on:input.debounce.150ms="syncPitchNameFields()"
+                required
+                class="mt-2 w-full max-w-xs rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+            >
+        </label>
+        @error($fieldName('number_of_pitches'))
+            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+        @enderror
+
+        <div class="space-y-2">
+            <div class="text-sm font-medium text-zinc-700 dark:text-zinc-300">{{ __('Pitch Names') }}</div>
+            <template x-for="(name, idx) in pitchNames" :key="idx">
+                <label class="mt-2 block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    <span class="mb-1 block" x-text="pitchLabelWord + ' ' + (idx + 1)"></span>
+                    <input
+                        type="text"
+                        x-model="pitchNames[idx]"
+                        x-bind:name="`${pitchNamesField}[${idx}]`"
+                        required
+                        maxlength="100"
+                        class="mt-1 w-full max-w-md rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+                    >
+                </label>
+            </template>
+        </div>
+        @error($fieldName('pitch_names'))
+            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+        @enderror
+        @if ($errors->has($fieldName('pitch_names.*')))
+            <p class="mt-1 text-sm text-red-600">{{ __('Each pitch needs a unique name.') }}</p>
+        @endif
+    </div>
 
     <div class="space-y-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
         <div>
@@ -341,8 +536,37 @@
         </div>
     </div>
 
+    @php
+        $timezoneOptions = [
+            'Asia/Manila' => __('Philippines — Asia/Manila (UTC+8)'),
+            'Asia/Singapore' => __('Singapore — Asia/Singapore'),
+            'Asia/Tokyo' => __('Japan — Asia/Tokyo'),
+            'Asia/Seoul' => __('Korea — Asia/Seoul'),
+            'Asia/Hong_Kong' => __('Hong Kong — Asia/Hong_Kong'),
+            'UTC' => __('UTC'),
+        ];
+        $timezoneSelected = \App\Support\SmallFixedRoundRobinDayOneSchedule::normalizeTimezone(
+            (string) $fieldValue('timezone', 'Asia/Manila'),
+        );
+    @endphp
     <div class="grid gap-4 md:grid-cols-2">
-        <flux:input name="{{ $fieldName('timezone') }}" :label="__('Timezone')" :value="$fieldValue('timezone', config('app.timezone'))" type="text" />
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            {{ __('Timezone') }}
+            <select
+                name="{{ $fieldName('timezone') }}"
+                class="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-700 dark:bg-zinc-950 dark:text-white"
+            >
+                @if (! array_key_exists($timezoneSelected, $timezoneOptions))
+                    <option value="{{ $timezoneSelected }}" selected>{{ $timezoneSelected }}</option>
+                @endif
+                @foreach ($timezoneOptions as $tzValue => $tzLabel)
+                    <option value="{{ $tzValue }}" @selected($timezoneSelected === $tzValue)>{{ $tzLabel }}</option>
+                @endforeach
+            </select>
+            @error($fieldName('timezone'))
+                <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+            @enderror
+        </label>
         <flux:input name="{{ $fieldName('venue_google_map_link') }}" :label="__('Venue Google Map Link')" :value="$fieldValue('venue_google_map_link')" type="text" />
     </div>
 

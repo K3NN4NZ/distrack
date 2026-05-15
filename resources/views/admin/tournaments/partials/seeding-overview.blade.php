@@ -10,23 +10,18 @@
             <span class="inline-flex items-center rounded-full bg-[#eef4ff] px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-[#2f55b7]">
                 {{ __('Step 1') }}
             </span>
-            <h2 class="mt-3 text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Auto Seed') }}</h2>
+            <h2 class="mt-3 text-lg font-semibold text-zinc-900 dark:text-white">{{ __('Manual Seeding') }}</h2>
             <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                {{ __('Use this when you want the system to randomize the team order automatically. Brackets only start once there are at least :minimum teams, and each bracket holds :count teams.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]) }}
+                {{ __('Assign each registered team a unique seed from 1 to N. Seeds are saved on the registration and drive round robin order. Brackets only start once there are at least :minimum teams, and each bracket holds :count teams.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]) }}
             </p>
         </div>
-
-        <form method="POST" action="{{ route('admin.tournaments.registrations.seed') }}" data-seeding-randomize-form>
-            @csrf
-            <input type="hidden" name="tournament_id" value="{{ $selectedTournament->id }}">
-            <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-            <input type="hidden" name="redirect_tab" value="overview">
-
-            <flux:button type="submit" variant="primary" :disabled="$teamCount === 0">
-                {{ __('Auto Seed Teams') }}
-            </flux:button>
-        </form>
     </div>
+
+    @if (! ($tournamentSeedsComplete ?? false) && $teamCount > 0)
+        <div class="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+            {{ __('Assign a unique seed (1–:n) to every team before generating schedules or using seed-based brackets.', ['n' => $teamCount]) }}
+        </div>
+    @endif
 
     <div class="mt-5 grid gap-3 md:grid-cols-3">
         <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
@@ -38,52 +33,135 @@
             <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $seededBracketGroups->count() }}</div>
         </div>
         <div class="rounded-xl border border-neutral-200 bg-zinc-50 px-4 py-3 dark:border-neutral-700 dark:bg-zinc-950">
-            <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Unassigned') }}</div>
+            <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{{ __('Unassigned bracket') }}</div>
             <div class="mt-2 text-2xl font-semibold text-zinc-900 dark:text-white">{{ $unassignedSeededCount }}</div>
         </div>
     </div>
 
+    @if ($errors->has('seeds'))
+        <div class="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+            {{ $errors->first('seeds') }}
+        </div>
+    @endif
+
+    @if ($teamCount > 0)
+        <form method="POST" action="{{ route('admin.tournaments.seeds.update', $selectedTournament) }}" class="mt-6 space-y-4">
+            @csrf
+            @method('PATCH')
+
+            <div class="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-700">
+                <table class="min-w-full divide-y divide-neutral-200 text-sm dark:divide-neutral-700">
+                    <thead class="bg-zinc-50 dark:bg-zinc-950">
+                        <tr>
+                            <th scope="col" class="px-4 py-3 text-left font-semibold text-zinc-700 dark:text-zinc-200">{{ __('Team') }}</th>
+                            <th scope="col" class="px-4 py-3 text-left font-semibold text-zinc-700 dark:text-zinc-200">{{ __('Current seed') }}</th>
+                            <th scope="col" class="px-4 py-3 text-left font-semibold text-zinc-700 dark:text-zinc-200">{{ __('Seed') }}</th>
+                            <th scope="col" class="px-4 py-3 text-left font-semibold text-zinc-700 dark:text-zinc-200">{{ __('Status') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-neutral-200 bg-white dark:divide-neutral-700 dark:bg-zinc-900">
+                        @foreach ($tournamentSeedOrderRegistrations as $registration)
+                            @php
+                                $rawSeed = old('seeds.'.$registration->id, $registration->seed_number);
+                                $selectedSeedForRow = ($rawSeed === '' || $rawSeed === null) ? null : (int) $rawSeed;
+                            @endphp
+                            <tr>
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-3">
+                                        @if ($registration->team?->logoUrl())
+                                            <img src="{{ $registration->team->logoUrl() }}" alt="" class="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-neutral-200 dark:ring-neutral-600" />
+                                        @else
+                                            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-xs font-semibold text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400" aria-hidden="true">
+                                                {{ Str::upper(Str::substr($registration->team?->name ?? '?', 0, 1)) }}
+                                            </span>
+                                        @endif
+                                        <span class="font-medium text-zinc-900 dark:text-white">{{ $registration->team?->name ?? '—' }}</span>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3 text-zinc-700 dark:text-zinc-300">
+                                    @if ($registration->seed_number !== null)
+                                        {{ $registration->seed_number }}
+                                    @else
+                                        <span class="text-zinc-500 italic dark:text-zinc-400">{{ __('Unassigned') }}</span>
+                                    @endif
+                                </td>
+                                <td class="px-4 py-3">
+                                    <label class="sr-only" for="seed-select-{{ $registration->id }}">{{ __('Seed for :team', ['team' => $registration->team?->name ?? '']) }}</label>
+                                    <select
+                                        id="seed-select-{{ $registration->id }}"
+                                        name="seeds[{{ $registration->id }}]"
+                                        class="w-full min-w-[8rem] rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none dark:border-neutral-600 dark:bg-zinc-900 dark:text-white"
+                                    >
+                                        <option value="" @selected($selectedSeedForRow === null)>{{ __('Unassigned') }}</option>
+                                        @foreach (range(1, $teamCount) as $seedOption)
+                                            <option value="{{ $seedOption }}" @selected($selectedSeedForRow === $seedOption)>
+                                                {{ __('Seed :n', ['n' => $seedOption]) }}
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                    @error('seeds.'.$registration->id)
+                                        <span class="mt-1 block text-xs text-red-600">{{ $message }}</span>
+                                    @enderror
+                                </td>
+                                <td class="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                                    @if ($registration->seed_number !== null)
+                                        {{ __('Assigned') }}
+                                    @else
+                                        {{ __('Pending') }}
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+
+            <flux:button type="submit" variant="primary">
+                {{ __('Save Seeds') }}
+            </flux:button>
+        </form>
+
+        <form method="POST" action="{{ route('admin.tournaments.seeds.fill-empty', $selectedTournament) }}" class="mt-3">
+            @csrf
+            <flux:button type="submit" variant="ghost">
+                {{ __('Fill Empty Seeds') }}
+            </flux:button>
+        </form>
+    @else
+        <p class="mt-6 text-sm text-zinc-600 dark:text-zinc-300">{{ __('Register teams to assign seeds.') }}</p>
+        <div class="mt-3">
+            <flux:button type="button" variant="primary" disabled>
+                {{ __('Save Seeds') }}
+            </flux:button>
+        </div>
+    @endif
+
     @if (($tournamentSeedOrderRegistrations ?? collect())->isNotEmpty())
-        <div class="mt-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
+        <div class="mt-8 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
             <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Tournament seed order') }}</div>
-            <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Teams are ordered by stored seed numbers (1 = seed A, 2 = B, …).') }}</p>
+            <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ __('Teams are ordered by stored seed numbers (1 = seed A, 2 = B, …). Unassigned teams appear last.') }}</p>
             <ul class="mt-3 list-none space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
                 @foreach ($tournamentSeedOrderRegistrations as $registration)
-                    <li>{{ ($registration->seed_letter ?? '—') }} — {{ $registration->team->name }}</li>
+                    <li>
+                        @if ($registration->seed_number !== null)
+                            {{ ($registration->seed_letter ?? '—') }} — {{ $registration->team->name }}
+                        @else
+                            <span class="text-zinc-500 dark:text-zinc-400">{{ __('Unassigned') }} — {{ $registration->team->name }}</span>
+                        @endif
+                    </li>
                 @endforeach
             </ul>
         </div>
     @endif
 
     <div class="mt-4 rounded-xl border border-dashed border-neutral-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-300">
-        {{ __('Every click shuffles the teams and bracket placements again. If there are fewer than :minimum teams, no bracket is created. Once bracket play starts, teams are grouped :count per bracket and any leftovers stay unassigned.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]) }}
+        {{ __('Bracket play starts only when at least :minimum teams are registered. Each bracket holds :count teams; assign bracket membership separately when you are ready for bracket round robin.', ['minimum' => $minimumBracketTeamCount, 'count' => $bracketTeamLimit]) }}
     </div>
 
     @if ($seededBracketGroups->isNotEmpty())
         <div class="mt-4 rounded-xl border border-neutral-200 bg-zinc-50 p-4 dark:border-neutral-700 dark:bg-zinc-950">
             <div class="flex items-start justify-between gap-3">
                 <div class="text-sm font-semibold text-zinc-900 dark:text-white">{{ __('Current Brackets') }}</div>
-
-                <form method="POST" action="{{ route('admin.tournaments.registrations.seed') }}" data-seeding-randomize-form>
-                    @csrf
-                    <input type="hidden" name="tournament_id" value="{{ $selectedTournament->id }}">
-                    <input type="hidden" name="redirect_route" value="admin.tournaments.index">
-                    <input type="hidden" name="redirect_tab" value="overview">
-
-                    <button
-                        type="submit"
-                        class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-neutral-300 bg-white text-zinc-700 shadow-sm transition hover:border-neutral-400 hover:bg-zinc-100 dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                        title="{{ __('Randomize current brackets') }}"
-                        aria-label="{{ __('Randomize current brackets') }}"
-                    >
-                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                            <path d="M16 4v4h-4" stroke-linecap="round" stroke-linejoin="round" />
-                            <path d="M4 14V10h4" stroke-linecap="round" stroke-linejoin="round" />
-                            <path d="M15.5 8a5 5 0 0 0-8.9-2" stroke-linecap="round" stroke-linejoin="round" />
-                            <path d="M4.5 12a5 5 0 0 0 8.9 2" stroke-linecap="round" stroke-linejoin="round" />
-                        </svg>
-                    </button>
-                </form>
             </div>
             <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 @foreach ($seededBracketGroups as $group)

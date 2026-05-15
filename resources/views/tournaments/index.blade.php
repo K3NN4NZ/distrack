@@ -560,36 +560,40 @@
             @if ($tournaments->count() > 0)
                 @foreach ($tournaments as $tournament)
                     @php
-                        $visual = $tournament->thumbnail_path;
                         $countryCode = $countryCodes[$tournament->country_name] ?? null;
                         $startsAt = $tournament->starts_at ?? $tournament->ends_at;
                         $dateDay = $startsAt?->format('d');
                         $dateMonth = strtoupper($startsAt?->format('M') ?? '');
-                        $initials = str($tournament->name)
-                            ->explode(' ')
-                            ->take(2)
-                            ->map(fn ($word) => str($word)->substr(0, 1))
-                            ->implode('');
                     @endphp
 
                     <article class="rounded-[1.6rem] border border-zinc-200/90 bg-white p-3.5 shadow-[0_20px_50px_-42px_rgba(15,23,42,0.26)] transition hover:border-zinc-300 hover:shadow-[0_28px_60px_-42px_rgba(15,23,42,0.28)] sm:p-4">
                         <div class="flex flex-col gap-4 sm:flex-row sm:items-start">
-                            <div class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.2rem] border border-zinc-200 bg-[#edf4ff] sm:h-24 sm:w-24">
-                                @if ($visual)
+                            @if ($tournament->logoUrl())
+                                <div class="flex h-24 w-28 shrink-0 items-center justify-center overflow-hidden sm:h-28 sm:w-32">
                                     <img
-                                        src="{{ $visual }}"
-                                        alt="{{ $tournament->name }}"
-                                        class="h-full w-full object-cover"
+                                        src="{{ $tournament->logoUrl() }}"
+                                        alt="{{ $tournament->name }} {{ __('logo') }}"
+                                        class="max-h-24 max-w-28 object-contain sm:max-h-28 sm:max-w-32"
                                     >
-                                @elseif ($startsAt)
-                                    <div class="flex h-full w-full flex-col items-center justify-center bg-[linear-gradient(135deg,_#d8e7ff_0%,_#bcd3fb_100%)]">
-                                        <span class="text-3xl font-semibold leading-none text-[#4f7ecc]">{{ $dateDay }}</span>
-                                        <span class="mt-1 text-base font-semibold uppercase tracking-[0.18em] text-[#4f7ecc]">{{ $dateMonth }}</span>
-                                    </div>
-                                @else
-                                    <span class="text-2xl font-semibold tracking-tight text-[#4f7ecc]">{{ $initials }}</span>
-                                @endif
-                            </div>
+                                </div>
+                            @else
+                                <div class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.2rem] border border-zinc-200 bg-[#edf4ff] sm:h-24 sm:w-24">
+                                    @if ($tournament->thumbnail_path)
+                                        <img
+                                            src="{{ $tournament->thumbnail_path }}"
+                                            alt="{{ $tournament->name }}"
+                                            class="h-full w-full object-cover"
+                                        >
+                                    @elseif ($startsAt)
+                                        <div class="flex h-full w-full flex-col items-center justify-center bg-[linear-gradient(135deg,_#d8e7ff_0%,_#bcd3fb_100%)]">
+                                            <span class="text-3xl font-semibold leading-none text-[#4f7ecc]">{{ $dateDay }}</span>
+                                            <span class="mt-1 text-base font-semibold uppercase tracking-[0.18em] text-[#4f7ecc]">{{ $dateMonth }}</span>
+                                        </div>
+                                    @else
+                                        <span class="text-2xl font-semibold tracking-tight text-[#4f7ecc]">{{ $tournament->initials() }}</span>
+                                    @endif
+                                </div>
+                            @endif
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">

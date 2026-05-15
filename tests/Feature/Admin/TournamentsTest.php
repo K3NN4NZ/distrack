@@ -8,14 +8,13 @@ use App\Models\Pitch;
 use App\Models\Team;
 use App\Models\TeamMember;
 use App\Models\Tournament;
-use App\Models\TournamentCrew;
 use App\Models\TournamentMatch;
 use App\Models\TournamentRegistration;
 use App\Models\User;
 use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallTournamentTeamStanding;
-use Illuminate\Http\UploadedFile;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -170,7 +169,8 @@ test('admin setup opens a tabbed workspace for the selected tournament', functio
         ->assertDontSee('tab=publish', false)
         ->assertDontSee('tab=event-crew', false)
         ->assertDontSee('tab=crew', false)
-        ->assertSee('Auto Seed')
+        ->assertSee('Manual Seeding')
+        ->assertSee('Save Seeds')
         ->assertDontSee('Save Manual Seeding')
         ->assertDontSee('Manual Team Assignment')
         ->assertDontSee('Quick Actions')
@@ -1325,14 +1325,14 @@ test('overview shows seeded team names inside current bracket cards', function (
     $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
         ->assertOk()
         ->assertSee('Current Brackets')
-        ->assertSee('Randomize current brackets')
+        ->assertSee('Manual Seeding')
         ->assertSee('A — Bracket Summary Team 1')
         ->assertSee('E — Bracket Summary Team 5')
         ->assertSee('F — Bracket Summary Team 6')
         ->assertSee('J — Bracket Summary Team 10');
 });
 
-test('admin users can auto seed 8 teams without creating brackets', function () {
+test('admin users can save full manual seeds for all teams', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -1365,13 +1365,22 @@ test('admin users can auto seed 8 teams without creating brackets', function () 
 
     $this->actingAs($admin);
 
-    $this->post(route('admin.tournaments.registrations.seed'), [
-        'tournament_id' => $tournament->id,
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'overview',
+    $registrationIds = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->pluck('id')
+        ->values();
+
+    $seeds = [];
+    foreach ($registrationIds as $index => $registrationId) {
+        $seeds[(int) $registrationId] = $index + 1;
+    }
+
+    $this->patch(route('admin.tournaments.seeds.update', $tournament), [
+        'seeds' => $seeds,
     ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
-        ->assertSessionHas('status', 'registrations-seeded');
+        ->assertSessionHas('status', 'tournament-seeds-saved');
 
     $registrations = TournamentRegistration::query()
         ->where('tournament_id', $tournament->id)
@@ -1379,12 +1388,13 @@ test('admin users can auto seed 8 teams without creating brackets', function () 
         ->get();
 
     expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(TournamentRegistration::tournamentHasCompleteUniqueSeeds($tournament->id))->toBeTrue();
     expect($registrations->pluck('bracket_code')->filter()->all())->toBe([]);
     expect($registrations->pluck('bracket_rank')->filter()->all())->toBe([]);
     expect($registrations->pluck('pool_name')->filter()->all())->toBe([]);
 });
 
-test('admin users can auto seed 10 teams into two random 5-team brackets', function () {
+test('admin users can save manual seeds for ten teams and assign bracket codes separately', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -1417,13 +1427,22 @@ test('admin users can auto seed 10 teams into two random 5-team brackets', funct
 
     $this->actingAs($admin);
 
-    $this->post(route('admin.tournaments.registrations.seed'), [
-        'tournament_id' => $tournament->id,
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'overview',
+    $registrationIds = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->pluck('id')
+        ->values();
+
+    $seeds = [];
+    foreach ($registrationIds as $index => $registrationId) {
+        $seeds[(int) $registrationId] = $index + 1;
+    }
+
+    $this->patch(route('admin.tournaments.seeds.update', $tournament), [
+        'seeds' => $seeds,
     ])
         ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
-        ->assertSessionHas('status', 'registrations-seeded');
+        ->assertSessionHas('status', 'tournament-seeds-saved');
 
     $registrations = TournamentRegistration::query()
         ->where('tournament_id', $tournament->id)
@@ -1431,12 +1450,10 @@ test('admin users can auto seed 10 teams into two random 5-team brackets', funct
         ->get();
 
     expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect($registrations->pluck('bracket_code')->filter()->count())->toBe(10);
-    expect($registrations->where('bracket_code', 'Bracket A')->count())->toBe(5);
-    expect($registrations->where('bracket_code', 'Bracket B')->count())->toBe(5);
+    expect($registrations->pluck('bracket_code')->filter()->all())->toBe([]);
 });
 
-test('admin users can auto seed teams through json for in-place bracket refreshes', function () {
+test('admin users cannot save duplicate manual seeds', function () {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -1469,20 +1486,128 @@ test('admin users can auto seed teams through json for in-place bracket refreshe
 
     $this->actingAs($admin);
 
-    $response = $this->postJson(route('admin.tournaments.registrations.seed'), [
-        'tournament_id' => $tournament->id,
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'overview',
+    $registrationIds = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->pluck('id')
+        ->values();
+
+    $seeds = [];
+    foreach ($registrationIds as $index => $registrationId) {
+        $seeds[(int) $registrationId] = $index < 2 ? 1 : $index + 1;
+    }
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->patch(route('admin.tournaments.seeds.update', $tournament), [
+            'seeds' => $seeds,
+        ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHasErrors('seeds');
+});
+
+test('admin fill empty seeds assigns the lowest available numbers', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Fill Empty Seeds Cup',
+        'slug' => 'fill-empty-seeds-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
     ]);
 
-    $response
-        ->assertOk()
-        ->assertJsonPath('status', 'registrations-seeded')
-        ->assertJsonPath('message', 'Teams seeded successfully. Brackets now use 5 teams each, and extra teams remain unassigned.')
-        ->assertJsonStructure(['overview_html']);
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Fill Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
 
-    expect($response->json('overview_html'))->toContain('Current Brackets');
-    expect($response->json('overview_html'))->toContain('Randomize current brackets');
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+            'seed_number' => $number <= 2 ? $number : null,
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.seeds.fill-empty', $tournament))
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'tournament-seeds-filled');
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->get();
+
+    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4]);
+});
+
+test('admin manual seeding leaves bracket codes unchanged until edited separately', function () {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Overflow Seeding Cup',
+        'slug' => 'overflow-seeding-cup-eleven',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 11) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Overflow Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'pending',
+        ]);
+    }
+
+    $this->actingAs($admin);
+
+    $registrationIds = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('id')
+        ->pluck('id')
+        ->values();
+
+    $seeds = [];
+    foreach ($registrationIds as $index => $registrationId) {
+        $seeds[(int) $registrationId] = $index + 1;
+    }
+
+    $this->patch(route('admin.tournaments.seeds.update', $tournament), [
+        'seeds' => $seeds,
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
+        ->assertSessionHas('status', 'tournament-seeds-saved');
+
+    $registrations = TournamentRegistration::query()
+        ->where('tournament_id', $tournament->id)
+        ->orderBy('seed_number')
+        ->get();
+
+    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect($registrations->pluck('bracket_code')->filter()->all())->toBe([]);
 });
 
 test('legacy round robin generator endpoint no longer creates matches even when brackets and pitches exist', function () {
@@ -1734,58 +1859,6 @@ test('admin users can reuse a team on the same pitch against a different round r
         ->where('tournament_id', $tournament->id)
         ->where('stage', 'round_robin')
         ->count())->toBe(2);
-});
-
-test('admin auto seeding leaves extra teams unassigned after full 5-team brackets are formed', function () {
-    $admin = User::factory()->admin()->create();
-    $teamOwner = User::factory()->create();
-
-    $tournament = Tournament::query()->create([
-        'created_by' => $admin->id,
-        'name' => 'Overflow Seeding Cup',
-        'slug' => 'overflow-seeding-cup',
-        'venue' => 'City Complex',
-        'status' => 'registration',
-        'country_name' => 'Philippines',
-        'surface' => 'Outdoor',
-        'division' => 'Open',
-        'is_public' => false,
-    ]);
-
-    foreach (range(1, 11) as $number) {
-        $team = Team::query()->create([
-            'owner_user_id' => $teamOwner->id,
-            'name' => 'Overflow Team '.$number,
-            'address' => 'Valencia City',
-            'status' => 'active',
-        ]);
-
-        TournamentRegistration::query()->create([
-            'tournament_id' => $tournament->id,
-            'team_id' => $team->id,
-            'status' => 'pending',
-        ]);
-    }
-
-    $this->actingAs($admin);
-
-    $this->post(route('admin.tournaments.registrations.seed'), [
-        'tournament_id' => $tournament->id,
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'overview',
-    ])
-        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'overview']))
-        ->assertSessionHas('status', 'registrations-seeded');
-
-    $registrations = TournamentRegistration::query()
-        ->where('tournament_id', $tournament->id)
-        ->orderBy('seed_number')
-        ->get();
-
-    expect($registrations->pluck('seed_number')->all())->toBe([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-    expect($registrations->take(10)->where('bracket_code', 'Bracket A')->count())->toBe(5);
-    expect($registrations->take(10)->where('bracket_code', 'Bracket B')->count())->toBe(5);
-    expect($registrations->last()->bracket_code)->toBeNull();
 });
 
 test('admin users can manually update seeding metadata per team', function () {
@@ -3581,6 +3654,8 @@ test('admin users can create tournament resources', function () {
         'link_labels' => ['Registration Form', 'Event Handbook'],
         'link_urls' => ['https://example.com/register', 'https://example.com/handbook'],
         'is_public' => '1',
+        'number_of_pitches' => 2,
+        'pitch_names' => ['Main Field', 'Court 2'],
     ])->assertRedirect();
 
     $tournament = Tournament::query()->first();
@@ -3605,104 +3680,62 @@ test('admin users can create tournament resources', function () {
     ]);
     expect($tournament->is_public)->toBeTrue();
 
-    $pitchResponse = $this->post(route('admin.tournaments.pitches.store'), [
-        'tournament_id' => $tournament->id,
-        'name' => 'Pitch 1',
-        'location' => 'North Wing',
-        'sort_order' => 1,
+    $createdPitches = Pitch::query()->where('tournament_id', $tournament->id)->orderBy('sort_order')->orderBy('id')->get();
+    expect($createdPitches)->toHaveCount(2);
+    expect($createdPitches->get(0)->name)->toBe('Main Field');
+    expect($createdPitches->get(1)->name)->toBe('Court 2');
+});
+
+test('admin cannot create a tournament when a pitch name exceeds 100 characters', function (): void {
+    $admin = User::factory()->admin()->create();
+
+    $this->actingAs($admin);
+
+    $long = str_repeat('A', 101);
+
+    $this->post(route('admin.tournaments.store'), [
+        'name' => 'Long Pitch Name Cup',
+        'venue' => 'Central Field',
+        'status' => 'draft',
+        'province_code' => '101300000',
+        'province' => 'Bukidnon',
+        'city_code' => '101312000',
+        'city' => 'Valencia City',
+        'barangay_code' => '101312000001',
+        'barangay' => 'Poblacion',
+        'country_name' => 'Philippines',
+        'number_of_pitches' => 2,
+        'pitch_names' => [$long, 'Court 2'],
+    ])->assertSessionHasErrors('pitch_names.0');
+});
+
+test('admin opening setup for a legacy tournament without pitches receives two fallback playing fields', function (): void {
+    $admin = User::factory()->admin()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Legacy No Pitches Cup',
+        'slug' => 'legacy-no-pitches-cup',
+        'venue' => 'Metro Field',
+        'status' => 'draft',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
     ]);
 
-    $pitchResponse->assertRedirect();
+    expect(Pitch::query()->where('tournament_id', $tournament->id)->count())->toBe(0);
 
-    $this->post(route('admin.tournaments.pitches.store'), [
-        'tournament_id' => $tournament->id,
-        'name' => 'Pitch 2',
-        'location' => 'South Wing',
-        'sort_order' => 2,
-    ])->assertRedirect();
+    $this->actingAs($admin);
 
-    $this->post(route('admin.tournaments.registrations.store'), [
-        'tournament_id' => $tournament->id,
-        'team_id' => $team->id,
-        'status' => 'approved',
-        'seed_number' => 1,
-        'bracket_code' => 'A',
-        'bracket_rank' => 'A1',
-        'pool_name' => 'POOL A',
-    ])->assertRedirect();
+    $this->get(route('admin.tournaments.index', ['tournament' => $tournament->id]))
+        ->assertOk();
 
-    $opponent = Team::query()->create([
-        'owner_user_id' => $teamOwner->id,
-        'name' => 'Flight Paths',
-        'address' => 'Taguig City',
-        'status' => 'active',
-    ]);
+    $pitches = Pitch::query()->where('tournament_id', $tournament->id)->orderBy('sort_order')->orderBy('id')->get();
 
-    $this->post(route('admin.tournaments.registrations.store'), [
-        'tournament_id' => $tournament->id,
-        'team_id' => $opponent->id,
-        'status' => 'approved',
-        'seed_number' => 2,
-        'bracket_code' => 'A',
-        'bracket_rank' => 'A2',
-        'pool_name' => 'POOL A',
-    ])->assertRedirect();
-
-    $homeRegistration = TournamentRegistration::query()
-        ->where('tournament_id', $tournament->id)
-        ->where('team_id', $team->id)
-        ->firstOrFail();
-
-    $awayRegistration = TournamentRegistration::query()
-        ->where('tournament_id', $tournament->id)
-        ->where('team_id', $opponent->id)
-        ->firstOrFail();
-
-    $pitch = Pitch::query()
-        ->where('tournament_id', $tournament->id)
-        ->where('name', 'Pitch 1')
-        ->firstOrFail();
-
-    $this->post(route('admin.tournaments.matches.store'), [
-        'tournament_id' => $tournament->id,
-        'pitch_id' => $pitch->id,
-        'home_registration_id' => $homeRegistration->id,
-        'away_registration_id' => $awayRegistration->id,
-        'stage' => 'pool_play',
-        'round_label' => 'Group A',
-        'match_number' => 1,
-        'scheduled_at' => now()->addWeeks(2)->setTime(9, 0)->format('Y-m-d H:i:s'),
-        'status' => 'completed',
-        'home_score' => 13,
-        'away_score' => 10,
-        'notes' => 'Opening showcase',
-    ])->assertRedirect();
-
-    $this->post(route('admin.tournaments.crews.store'), [
-        'tournament_id' => $tournament->id,
-        'category' => 'Tournament Admins',
-        'title' => 'Head TD',
-        'name' => 'Casey Lim',
-        'sort_order' => 1,
-        'photo' => UploadedFile::fake()->image('casey-lim.png'),
-    ])->assertRedirect();
-
-    $tournament->refresh();
-
-    $match = TournamentMatch::query()->where('tournament_id', $tournament->id)->first();
-    $crewMember = TournamentCrew::query()->where('tournament_id', $tournament->id)->first();
-
-    expect($tournament->pitches)->toHaveCount(2);
-    expect($tournament->registrations)->toHaveCount(2);
-    expect($tournament->registrations->firstWhere('team_id', $team->id))->not->toBeNull();
-    expect($match)->not->toBeNull();
-    expect($match->pitch_id)->toBe($pitch->id);
-    expect($match->home_score)->toBe(13);
-    expect($match->away_score)->toBe(10);
-    expect($crewMember)->not->toBeNull();
-    expect($crewMember->category)->toBe('Tournament Admins');
-    expect($crewMember->photo_path)->not->toBeNull();
-    Storage::disk('public')->assertExists($crewMember->photo_path);
+    expect($pitches)->toHaveCount(2);
+    expect($pitches->get(0)->name)->toBe('Pitch 1');
+    expect($pitches->get(1)->name)->toBe('Pitch 2');
 });
 
 test('scorekeepers can record scoring plays after the match is completed and rebuild match totals', function () {
@@ -6242,6 +6275,290 @@ test('admin can update an existing crossover match', function () {
         ->assertSee('Assigned by:', false);
 });
 
+test('admin can update round robin match start and end times without changing scores', function (): void {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'RR Time Edit Cup',
+        'slug' => 'rr-time-edit-cup',
+        'venue' => 'Field',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+    ]);
+
+    $team1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Alpha',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+    $team2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Beta',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+
+    $registration1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+    ]);
+    $registration2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $registration1->id,
+        'away_registration_id' => $registration2->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 1,
+        'scheduled_at' => '2026-06-01 10:00:00',
+        'scheduled_ends_at' => '2026-06-01 11:00:00',
+        'status' => 'completed',
+        'home_score' => 5,
+        'away_score' => 3,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->put(route('admin.tournaments.matches.update', ['match' => $match->id]), [
+        'edit_match_id' => $match->id,
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+        'home_registration_id' => $registration1->id,
+        'away_registration_id' => $registration2->id,
+        'pitch_id' => $pitch->id,
+        'round_label' => 'Round 1',
+        'match_number' => 1,
+        'start_time' => '14:30',
+        'end_time' => '16:00',
+    ])->assertRedirect(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'round-robin',
+    ]));
+
+    $match->refresh();
+
+    expect($match->home_score)->toBe(5)
+        ->and($match->away_score)->toBe(3);
+
+    $expectedStart = CarbonImmutable::create(2026, 6, 1, 14, 30, 0, 'Asia/Manila');
+    $expectedEnd = CarbonImmutable::create(2026, 6, 1, 16, 0, 0, 'Asia/Manila');
+    expect($match->scheduled_at->equalTo($expectedStart))->toBeTrue()
+        ->and($match->scheduled_ends_at->equalTo($expectedEnd))->toBeTrue();
+});
+
+test('admin can update small fixed grid round robin game without changing schedule times', function (): void {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'RR Grid Game Scope Cup',
+        'slug' => 'rr-grid-game-scope-cup',
+        'venue' => 'Field',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+    ]);
+
+    $pitchSouth = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'South',
+        'sort_order' => 1,
+    ]);
+    $pitchNorth = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 2,
+    ]);
+
+    $team1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Slot A1',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+    $team2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Slot A2',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+
+    $registration1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+    ]);
+    $registration2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    $marker = SmallFixedRoundRobinDayOneSchedule::marker(5, 2);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitchSouth->id,
+        'home_registration_id' => $registration1->id,
+        'away_registration_id' => $registration2->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 3',
+        'match_number' => 5,
+        'scheduled_at' => '2026-06-01 10:00:00',
+        'scheduled_ends_at' => '2026-06-01 11:00:00',
+        'status' => 'scheduled',
+        'notes' => $marker.' prior',
+    ]);
+
+    $this->actingAs($admin);
+
+    $beforeStart = $match->scheduled_at->copy();
+    $beforeEnd = $match->scheduled_ends_at->copy();
+
+    $this->put(route('admin.tournaments.matches.update', ['match' => $match->id]), [
+        'edit_match_id' => $match->id,
+        'match_edit_scope' => 'game',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+        'home_registration_id' => $registration2->id,
+        'away_registration_id' => $registration1->id,
+        'pitch_id' => $pitchNorth->id,
+        'match_number' => 5,
+    ])->assertRedirect(route('admin.tournaments.index', [
+        'tournament' => $tournament->id,
+        'tab' => 'round-robin',
+    ]));
+
+    $match->refresh();
+
+    expect($match->home_registration_id)->toBe($registration2->id)
+        ->and($match->away_registration_id)->toBe($registration1->id)
+        ->and($match->pitch_id)->toBe($pitchNorth->id)
+        ->and($match->round_label)->toBe('Round 3')
+        ->and($match->scheduled_at->equalTo($beforeStart))->toBeTrue()
+        ->and($match->scheduled_ends_at->equalTo($beforeEnd))->toBeTrue();
+});
+
+test('admin cannot save round robin match when end time is not after start time', function (): void {
+    $admin = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'RR Time Invalid Cup',
+        'slug' => 'rr-time-invalid-cup',
+        'venue' => 'Field',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+    ]);
+
+    $pitch = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+    ]);
+
+    $team1 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Gamma',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+    $team2 = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'RR Delta',
+        'address' => 'City',
+        'status' => 'active',
+    ]);
+
+    $registration1 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team1->id,
+        'status' => 'approved',
+        'seed_number' => 1,
+        'bracket_code' => 'Bracket A',
+    ]);
+    $registration2 = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $team2->id,
+        'status' => 'approved',
+        'seed_number' => 2,
+        'bracket_code' => 'Bracket A',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $registration1->id,
+        'away_registration_id' => $registration2->id,
+        'stage' => 'round_robin',
+        'round_label' => 'Round 1',
+        'match_number' => 2,
+        'scheduled_at' => '2026-06-02 10:00:00',
+        'scheduled_ends_at' => '2026-06-02 11:00:00',
+        'status' => 'scheduled',
+    ]);
+
+    $this->actingAs($admin);
+
+    $beforeStart = $match->scheduled_at->copy();
+
+    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->put(route('admin.tournaments.matches.update', ['match' => $match->id]), [
+            'edit_match_id' => $match->id,
+            'redirect_route' => 'admin.tournaments.index',
+            'redirect_tab' => 'round-robin',
+            'home_registration_id' => $registration1->id,
+            'away_registration_id' => $registration2->id,
+            'pitch_id' => $pitch->id,
+            'round_label' => 'Round 1',
+            'match_number' => 2,
+            'start_time' => '15:00',
+            'end_time' => '14:00',
+        ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHasErrors('end_time');
+
+    $match->refresh();
+    expect($match->scheduled_at->equalTo($beforeStart))->toBeTrue();
+});
+
 test('admin can delete crossover field assignment and move the game back to unassigned', function () {
     $admin = User::factory()->admin()->create();
     $owner = User::factory()->create();
@@ -6520,7 +6837,7 @@ test('crossover edit modal preselects the existing assigned teams', function () 
     expect(preg_match('/<option[^>]*(value="'.preg_quote((string) $registrationB2->id, '/').'"[^>]*selected|selected[^>]*value="'.preg_quote((string) $registrationB2->id, '/').'")[^>]*>/', $content))->toBe(1);
 });
 
-test('admin users can sync the small tournament fixed Day 1 round robin grid as twenty-four tracked matches', function (): void {
+test('SmallFixedRoundRobinDayOneSchedule::sync creates twenty-four tracked Day 1 round robin matches', function (): void {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -6553,14 +6870,7 @@ test('admin users can sync the small tournament fixed Day 1 round robin grid as 
         ]);
     }
 
-    $this->actingAs($admin);
-
-    $this->post(route('admin.tournaments.matches.small-day1-schedule.sync', $tournament), [
-        'redirect_route' => 'admin.tournaments.index',
-        'redirect_tab' => 'round-robin',
-    ])
-        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHas('status', 'small-day1-schedule-synced');
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
 
     $tracked = TournamentMatch::query()
         ->where('tournament_id', $tournament->id)
@@ -6579,7 +6889,145 @@ test('admin users can sync the small tournament fixed Day 1 round robin grid as 
     expect($tracked->where('pitch_id', $pitches->get(1)->id))->toHaveCount(12);
 });
 
-test('admin users cannot sync the fixed Day 1 grid once the tournament reaches the bracket team threshold', function (): void {
+test('SmallFixedRoundRobinDayOneSchedule::sync persists custom start and end times from slot rows', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Small Day One Custom Rows Cup',
+        'slug' => 'small-day-one-custom-rows-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+    ]);
+
+    foreach (range(1, 9) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Custom RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    $p1 = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+    $p2 = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'South',
+        'sort_order' => 2,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+
+    $tournament->load(['registrations' => fn ($q) => $q->orderBy('id')]);
+
+    $day1Rows = SmallFixedRoundRobinDayOneSchedule::defaultSlotFormRows($tournament);
+    $day1Rows[0]['start_time'] = '18:00';
+    $day1Rows[0]['end_time'] = '19:00';
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament, $day1Rows);
+
+    $m = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('match_number', 1)
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->first();
+
+    expect($m)->not->toBeNull();
+    expect($m->scheduled_at->format('Y-m-d H:i'))->toBe(SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO.' 18:00');
+    expect($m->scheduled_ends_at->format('Y-m-d H:i'))->toBe(SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO.' 19:00');
+    expect($m->pitch_id)->toBe($p1->id);
+});
+
+test('SmallFixedRoundRobinDayOneSchedule::sync accepts fewer than twelve rows when game numbers keep unique pairs', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Small Day One Gapped Numbers Cup',
+        'slug' => 'small-day-one-gapped-numbers-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+    ]);
+
+    foreach (range(1, 9) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Gapped RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+    Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'South',
+        'sort_order' => 2,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+
+    $tournament->load(['registrations' => fn ($q) => $q->orderBy('id')]);
+
+    $day1Rows = SmallFixedRoundRobinDayOneSchedule::defaultSlotFormRows($tournament);
+    unset($day1Rows[2]);
+    $day1Rows = array_values($day1Rows);
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament, $day1Rows);
+
+    $tracked = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->orderBy('match_number')
+        ->get();
+
+    expect($tracked)->toHaveCount(22);
+    expect($tracked->pluck('match_number')->all())->not->toContain(5)->not->toContain(6);
+});
+
+test('admin users cannot create manual round robin schedule rows once the tournament reaches the bracket team threshold', function (): void {
     $admin = User::factory()->admin()->create();
     $teamOwner = User::factory()->create();
 
@@ -6614,13 +7062,24 @@ test('admin users cannot sync the fixed Day 1 grid once the tournament reaches t
 
     $this->actingAs($admin);
 
-    $this->from(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->post(route('admin.tournaments.matches.small-day1-schedule.sync', $tournament), [
-            'redirect_route' => 'admin.tournaments.index',
-            'redirect_tab' => 'round-robin',
-        ])
-        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
-        ->assertSessionHasErrors('small_day1_schedule');
+    $this->post(route('admin.tournaments.round-robin.schedules.store', $tournament), [
+        'day' => '1',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+        'rr_slot' => [
+            'round' => 1,
+            'start_time' => '07:00',
+            'end_time' => '07:40',
+            'pitch1_pitch_id' => 1,
+            'pitch2_pitch_id' => 1,
+            'match1_match_number' => 1,
+            'match2_match_number' => 2,
+            'match1_home_registration_id' => 1,
+            'match1_away_registration_id' => 1,
+            'match2_home_registration_id' => 1,
+            'match2_away_registration_id' => 1,
+        ],
+    ])->assertNotFound();
 });
 
 test('admin users can update round robin match status from the small tournament fixed schedule flow', function (): void {
@@ -6668,10 +7127,13 @@ test('admin users can update round robin match status from the small tournament 
 
     expect($slotMatches)->not->toBeEmpty();
 
+    $first = $slotMatches->first();
+    $second = $slotMatches->last();
+    $slotKey = filled($first->schedule_slot_ulid) ? (string) $first->schedule_slot_ulid : 'm'.$first->id.'-m'.$second->id;
+
     $this->actingAs($admin);
 
-    $this->patch(route('admin.tournaments.matches.small-day1-slot-status.update', $tournament), [
-        'round' => 1,
+    $this->patch(route('admin.tournaments.round-robin.schedules.status', [$tournament, $slotKey]), [
         'status' => 'live',
         'redirect_route' => 'admin.tournaments.index',
         'redirect_tab' => 'round-robin',
@@ -6729,10 +7191,13 @@ test('small tournament Round Robin row can be marked completed without scores', 
 
     expect($slotMatches)->not->toBeEmpty();
 
+    $first = $slotMatches->first();
+    $second = $slotMatches->last();
+    $slotKey = filled($first->schedule_slot_ulid) ? (string) $first->schedule_slot_ulid : 'm'.$first->id.'-m'.$second->id;
+
     $this->actingAs($admin);
 
-    $this->patch(route('admin.tournaments.matches.small-day1-slot-status.update', $tournament), [
-        'round' => 1,
+    $this->patch(route('admin.tournaments.round-robin.schedules.status', [$tournament, $slotKey]), [
         'status' => 'completed',
         'redirect_route' => 'admin.tournaments.index',
         'redirect_tab' => 'round-robin',
@@ -6747,4 +7212,310 @@ test('small tournament Round Robin row can be marked completed without scores', 
             ->and($fresh->home_score)->toBeNull()
             ->and($fresh->away_score)->toBeNull();
     }
+});
+
+test('admin can delete a small tournament Day 1 synced schedule row when both games are still scheduled', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Delete Schedule Row Cup',
+        'slug' => 'delete-schedule-row-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Delete Row RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+
+    $before = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->where('notes', 'like', '%'.SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX.'%')
+        ->whereIn('match_number', [1, 2])
+        ->count();
+
+    expect($before)->toBe(2);
+
+    $first = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 1)
+        ->firstOrFail();
+    $second = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 2)
+        ->firstOrFail();
+    $slotKey = filled($first->schedule_slot_ulid) ? (string) $first->schedule_slot_ulid : 'm'.$first->id.'-m'.$second->id;
+
+    $this->actingAs($admin);
+
+    $this->delete(route('admin.tournaments.round-robin.schedules.destroy', [$tournament, $slotKey]), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'round-robin-schedule-row-deleted')
+        ->assertSessionDoesntHaveErrors();
+
+    expect(
+        TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereIn('match_number', [1, 2])
+            ->count()
+    )->toBe(0);
+});
+
+test('admin cannot delete a small tournament Day 1 schedule row when a game is live', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Block Delete Live Cup',
+        'slug' => 'block-delete-live-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Block Live RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+
+    $first = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 1)
+        ->firstOrFail();
+    $second = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 2)
+        ->firstOrFail();
+    $slotKey = filled($first->schedule_slot_ulid) ? (string) $first->schedule_slot_ulid : 'm'.$first->id.'-m'.$second->id;
+
+    $this->actingAs($admin);
+
+    $this->patch(route('admin.tournaments.round-robin.schedules.status', [$tournament, $slotKey]), [
+        'status' => 'live',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertSessionHas('status', 'match-status-updated');
+
+    $this->delete(route('admin.tournaments.round-robin.schedules.destroy', [$tournament, $slotKey]), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHasErrors('schedule_row');
+
+    expect(
+        TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereIn('match_number', [1, 2])
+            ->count()
+    )->toBe(2);
+});
+
+test('admin can restore a soft-deleted small tournament Day 1 schedule row', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Restore Schedule Row Cup',
+        'slug' => 'restore-schedule-row-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+    ]);
+
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Restore RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+
+    $m1 = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 1)
+        ->firstOrFail();
+    $m2 = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('match_number', 2)
+        ->firstOrFail();
+    $slotUlid = $m1->schedule_slot_ulid;
+    $slotKey = filled($slotUlid) ? (string) $slotUlid : 'm'.$m1->id.'-m'.$m2->id;
+
+    $this->actingAs($admin);
+
+    $this->delete(route('admin.tournaments.round-robin.schedules.destroy', [$tournament, $slotKey]), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertSessionHas('status', 'round-robin-schedule-row-deleted');
+
+    expect(
+        TournamentMatch::onlyTrashed()
+            ->where('tournament_id', $tournament->id)
+            ->whereIn('match_number', [1, 2])
+            ->count()
+    )->toBe(2);
+
+    $this->patch(route('admin.tournaments.round-robin.schedules.restore', [$tournament, $slotKey]), [
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'round-robin-schedule-row-restored')
+        ->assertSessionDoesntHaveErrors();
+
+    expect(
+        TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereIn('match_number', [1, 2])
+            ->count()
+    )->toBe(2);
+});
+
+test('admin can create a manual round robin schedule row via round-robin.schedules.store', function (): void {
+    $admin = User::factory()->admin()->create();
+    $teamOwner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $admin->id,
+        'name' => 'Manual RR Store Cup',
+        'slug' => 'manual-rr-store-cup',
+        'venue' => 'City Complex',
+        'status' => 'registration',
+        'country_name' => 'Philippines',
+        'surface' => 'Outdoor',
+        'division' => 'Open',
+        'is_public' => false,
+        'timezone' => 'Asia/Manila',
+        'starts_at' => now()->startOfDay(),
+    ]);
+
+    $regs = [];
+    foreach (range(1, 4) as $number) {
+        $team = Team::query()->create([
+            'owner_user_id' => $teamOwner->id,
+            'name' => 'Manual RR Team '.$number,
+            'address' => 'Valencia City',
+            'status' => 'active',
+        ]);
+
+        $regs[] = TournamentRegistration::query()->create([
+            'tournament_id' => $tournament->id,
+            'team_id' => $team->id,
+            'status' => 'approved',
+            'seed_number' => $number,
+            'bracket_code' => null,
+        ]);
+    }
+
+    $p1 = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'North',
+        'sort_order' => 1,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+    $p2 = Pitch::query()->create([
+        'tournament_id' => $tournament->id,
+        'name' => 'South',
+        'sort_order' => 2,
+        'scorekeeper_user_id' => null,
+        'is_active' => true,
+    ]);
+
+    $this->actingAs($admin);
+
+    $this->post(route('admin.tournaments.round-robin.schedules.store', $tournament), [
+        'day' => '1',
+        'redirect_route' => 'admin.tournaments.index',
+        'redirect_tab' => 'round-robin',
+        'rr_slot' => [
+            'round' => 1,
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+            'pitch1_pitch_id' => $p1->id,
+            'pitch2_pitch_id' => $p2->id,
+            'match1_match_number' => 101,
+            'match2_match_number' => 102,
+            'match1_home_registration_id' => $regs[0]->id,
+            'match1_away_registration_id' => $regs[1]->id,
+            'match2_home_registration_id' => $regs[2]->id,
+            'match2_away_registration_id' => $regs[3]->id,
+            'status' => 'upcoming',
+        ],
+    ])
+        ->assertRedirect(route('admin.tournaments.index', ['tournament' => $tournament->id, 'tab' => 'round-robin']))
+        ->assertSessionHas('status', 'round-robin-schedule-row-created')
+        ->assertSessionDoesntHaveErrors();
+
+    $created = TournamentMatch::query()
+        ->where('tournament_id', $tournament->id)
+        ->where('stage', 'round_robin')
+        ->whereIn('match_number', [101, 102])
+        ->orderBy('match_number')
+        ->get();
+
+    expect($created)->toHaveCount(2);
+    expect($created->pluck('schedule_slot_ulid')->unique()->count())->toBe(1);
+    expect($created->first()?->notes)->toContain('[[manual-rr-slot]]');
 });

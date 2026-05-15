@@ -19,10 +19,12 @@ use App\Support\BracketCodes;
 use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use App\Support\SmallFixedRoundRobinDayTwoSchedule;
+use App\Support\SmallRoundRobinUnsyncedFormWarnings;
 use App\Support\SmallTournamentTeamStanding;
 use App\Support\TournamentPooling;
 use App\Support\TournamentReportBuilder;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\CarbonImmutable;
 use iio\libmergepdf\Merger;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -100,6 +102,12 @@ class TournamentController extends Controller
                 ->orderBy('match_number')
                 ->orderBy('id'),
         ]);
+
+        if ($selectedTournament !== null && $request->user()->isAdmin()) {
+            if ($selectedTournament->ensureFallbackPitchesIfNone()) {
+                $selectedTournament->load('pitches');
+            }
+        }
 
         if ($selectedTournament !== null) {
             $registrationCount = $selectedTournament->registrations->count();
@@ -225,13 +233,27 @@ class TournamentController extends Controller
      */
     public function storeTournament(Request $request): RedirectResponse
     {
-        $validated = $request->validate($this->tournamentRules());
+        $validated = $request->validate(array_merge(
+            $this->tournamentRules(),
+            $this->tournamentPitchRules(),
+        ));
+
+        $this->validateTournamentPitchNames($validated, '');
+
+        $payload = $this->buildTournamentPayload($validated, $request);
+        $payload = $this->mergeTournamentLogoUpload($request, $payload, '', null);
 
         $tournament = Tournament::create([
             'slug' => $this->uniqueSlug($validated['name']),
             'created_by' => $request->user()->id,
-            ...$this->buildTournamentPayload($validated, $request),
+            ...$payload,
         ]);
+
+        $this->syncTournamentPitchesFromAdminInput(
+            $tournament,
+            (int) $validated['number_of_pitches'],
+            array_values((array) ($validated['pitch_names'] ?? [])),
+        );
 
         return redirect()
             ->route('admin.tournaments.index', [
@@ -247,9 +269,23 @@ class TournamentController extends Controller
     public function updateTournament(Request $request, Tournament $tournament): RedirectResponse
     {
         $prefix = 'edit_';
-        $validated = $request->validate($this->tournamentRules($prefix));
+        $validated = $request->validate(array_merge(
+            $this->tournamentRules($prefix),
+            $this->tournamentPitchRules($prefix),
+        ));
 
-        $tournament->update($this->buildTournamentPayload($validated, $request, $prefix));
+        $this->validateTournamentPitchNames($validated, $prefix);
+
+        $payload = $this->buildTournamentPayload($validated, $request, $prefix);
+        $payload = $this->mergeTournamentLogoUpload($request, $payload, $prefix, $tournament);
+
+        $tournament->update($payload);
+
+        $this->syncTournamentPitchesFromAdminInput(
+            $tournament,
+            (int) $validated[$prefix.'number_of_pitches'],
+            array_values((array) ($validated[$prefix.'pitch_names'] ?? [])),
+        );
 
         return redirect()
             ->route(
@@ -938,6 +974,17 @@ class TournamentController extends Controller
     {
         $tournamentId = $pitch->tournament_id;
 
+        if ($pitch->matches()->exists()) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'pitch' => __('Cannot delete this pitch while matches are assigned to it. Unassign those matches or deactivate the pitch from the tournament edit form instead.'),
+                ]);
+        }
+
         $pitch->delete();
 
         return redirect()
@@ -1030,70 +1077,161 @@ class TournamentController extends Controller
     }
 
     /**
-     * Auto-assign sequential seeds and compose brackets only when two full groups can be formed.
+     * Save tournament-wide manual seeds (1 … N, unique) from the Overview tab.
      */
-    public function seedRegistrations(Request $request): RedirectResponse|JsonResponse
+    public function updateManualTournamentSeeds(Request $request, Tournament $tournament): RedirectResponse
     {
-        $validated = $request->validate([
-            'tournament_id' => ['required', 'integer', 'exists:tournaments,id'],
-        ]);
+        $tournamentId = (int) $tournament->id;
 
-        $registrations = TournamentRegistration::query()
-            ->where('tournament_id', $validated['tournament_id'])
-            ->get()
-            ->shuffle()
-            ->values();
+        $ownedIds = TournamentRegistration::query()
+            ->where('tournament_id', $tournamentId)
+            ->orderBy('id')
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->values()
+            ->all();
 
-        if ($registrations->isEmpty()) {
-            return $this->buildSeedRegistrationsResponse(
-                request: $request,
-                tournamentId: $validated['tournament_id'],
-                status: 'registrations-seeding-skipped',
-            );
+        $n = count($ownedIds);
+
+        if ($n === 0) {
+            return redirect()
+                ->route('admin.tournaments.index', [
+                    'tournament' => $tournament->id,
+                    'tab' => 'overview',
+                ])
+                ->with('status', 'tournament-seeds-saved');
         }
 
-        $fullBracketTeamCount = $registrations->count() >= self::MINIMUM_BRACKET_TEAM_COUNT
-            ? intdiv($registrations->count(), self::BRACKET_TEAM_LIMIT) * self::BRACKET_TEAM_LIMIT
-            : 0;
+        $raw = $request->input('seeds', []);
+        $raw = is_array($raw) ? $raw : [];
 
-        $bracketCount = $fullBracketTeamCount > 0
-            ? intdiv($fullBracketTeamCount, self::BRACKET_TEAM_LIMIT)
-            : 0;
+        $seedsByRegistrationId = [];
+        foreach ($ownedIds as $registrationId) {
+            $value = $raw[(string) $registrationId] ?? $raw[$registrationId] ?? null;
+            if ($value === '' || $value === null) {
+                $seedsByRegistrationId[$registrationId] = null;
+            } elseif (is_numeric($value)) {
+                $seedsByRegistrationId[$registrationId] = (int) $value;
+            } else {
+                $seedsByRegistrationId[$registrationId] = null;
+            }
+        }
 
-        $bracketSlots = $bracketCount > 0
-            ? collect(range(0, $bracketCount - 1))
-                ->flatMap(fn (int $bracketIndex): array => array_fill(
-                    0,
-                    self::BRACKET_TEAM_LIMIT,
-                    'Bracket '.$this->alphabeticalBracketLabel($bracketIndex),
-                ))
-                ->shuffle()
-                ->values()
-            : collect();
+        $validator = Validator::make(
+            ['seeds' => $seedsByRegistrationId],
+            [
+                'seeds' => ['required', 'array', 'size:'.$n],
+            ],
+        );
 
-        DB::transaction(function () use ($bracketSlots, $fullBracketTeamCount, $registrations): void {
-            foreach ($registrations as $index => $registration) {
-                $seedNumber = $index + 1;
-                $bracketCode = null;
+        $validator->after(function ($validator) use ($seedsByRegistrationId, $n): void {
+            if ($n === 0) {
+                return;
+            }
 
-                if ($index < $fullBracketTeamCount) {
-                    $bracketCode = $bracketSlots->get($index);
+            $nonNull = collect($seedsByRegistrationId)->filter(fn ($v): bool => $v !== null);
+
+            foreach ($seedsByRegistrationId as $registrationId => $seed) {
+                if ($seed === null) {
+                    continue;
                 }
 
-                $registration->update([
-                    'seed_number' => $seedNumber,
-                    'bracket_code' => $bracketCode,
-                    'bracket_rank' => null,
-                    'pool_name' => null,
-                ]);
+                if ($seed < 1 || $seed > $n) {
+                    $validator->errors()->add(
+                        'seeds.'.$registrationId,
+                        __('Each seed must be between 1 and :max.', ['max' => $n]),
+                    );
+                }
+            }
+
+            $values = $nonNull->values();
+            if ($values->count() !== $values->unique()->count()) {
+                $validator->errors()->add(
+                    'seeds',
+                    __('Seed numbers must be unique. Two or more teams share the same seed.'),
+                );
             }
         });
 
-        return $this->buildSeedRegistrationsResponse(
-            request: $request,
-            tournamentId: $validated['tournament_id'],
-            status: 'registrations-seeded',
-        );
+        $validator->validate();
+
+        DB::transaction(function () use ($tournamentId, $seedsByRegistrationId): void {
+            TournamentRegistration::query()
+                ->where('tournament_id', $tournamentId)
+                ->update(['seed_number' => null]);
+
+            foreach ($seedsByRegistrationId as $registrationId => $seed) {
+                TournamentRegistration::query()
+                    ->where('tournament_id', $tournamentId)
+                    ->whereKey($registrationId)
+                    ->update(['seed_number' => $seed]);
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', [
+                'tournament' => $tournament->id,
+                'tab' => 'overview',
+            ])
+            ->with('status', 'tournament-seeds-saved');
+    }
+
+    /**
+     * Assign unused seeds 1 … N to registrations that still have a null seed (explicit helper only).
+     */
+    public function fillEmptyTournamentSeeds(Request $request, Tournament $tournament): RedirectResponse
+    {
+        $tournamentId = (int) $tournament->id;
+
+        $registrations = TournamentRegistration::query()
+            ->where('tournament_id', $tournamentId)
+            ->orderBy('id')
+            ->get(['id', 'seed_number']);
+
+        if ($registrations->isEmpty()) {
+            return redirect()
+                ->route('admin.tournaments.index', [
+                    'tournament' => $tournament->id,
+                    'tab' => 'overview',
+                ])
+                ->with('status', 'tournament-seeds-fill-empty-skipped');
+        }
+
+        $n = $registrations->count();
+        $used = $registrations->pluck('seed_number')->filter(fn ($s): bool => $s !== null)->map(fn ($s): int => (int) $s)->unique()->sort()->values();
+        $available = collect(range(1, $n))->diff($used)->values();
+
+        $nullRegistrationIds = $registrations->whereNull('seed_number')->pluck('id')->values();
+
+        if ($nullRegistrationIds->isEmpty()) {
+            return redirect()
+                ->route('admin.tournaments.index', [
+                    'tournament' => $tournament->id,
+                    'tab' => 'overview',
+                ])
+                ->with('status', 'tournament-seeds-fill-empty-none');
+        }
+
+        DB::transaction(function () use ($tournamentId, $nullRegistrationIds, $available): void {
+            foreach ($nullRegistrationIds as $index => $registrationId) {
+                $nextSeed = $available->get($index);
+                if ($nextSeed === null) {
+                    break;
+                }
+
+                TournamentRegistration::query()
+                    ->where('tournament_id', $tournamentId)
+                    ->whereKey((int) $registrationId)
+                    ->update(['seed_number' => (int) $nextSeed]);
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', [
+                'tournament' => $tournament->id,
+                'tab' => 'overview',
+            ])
+            ->with('status', 'tournament-seeds-filled');
     }
 
     /**
@@ -1139,6 +1277,21 @@ class TournamentController extends Controller
                 ->where('tournament_id', $tournamentId)
                 ->get()
                 ->keyBy('id');
+
+            $registrationCountInTournament = $currentRegistrations->count();
+
+            foreach ($registrations as $index => $registrationData) {
+                $submittedSeed = filled($registrationData['seed_number'] ?? null)
+                    ? (int) $registrationData['seed_number']
+                    : null;
+
+                if ($submittedSeed !== null && ($submittedSeed < 1 || $submittedSeed > $registrationCountInTournament)) {
+                    $validator->errors()->add(
+                        "registrations.{$index}.seed_number",
+                        __('Each seed must be between 1 and :max.', ['max' => $registrationCountInTournament]),
+                    );
+                }
+            }
 
             $finalSeedAssignments = $currentRegistrations
                 ->mapWithKeys(fn (TournamentRegistration $registration): array => [
@@ -1267,6 +1420,16 @@ class TournamentController extends Controller
         $validated = $validator->validate();
 
         DB::transaction(function () use ($validated): void {
+            $ids = collect($validated['registrations'])
+                ->pluck('id')
+                ->map(fn ($id): int => (int) $id)
+                ->all();
+
+            TournamentRegistration::query()
+                ->where('tournament_id', $validated['tournament_id'])
+                ->whereIn('id', $ids)
+                ->update(['seed_number' => null]);
+
             foreach ($validated['registrations'] as $registrationData) {
                 $registration = TournamentRegistration::query()
                     ->where('tournament_id', $validated['tournament_id'])
@@ -1779,6 +1942,19 @@ class TournamentController extends Controller
         ]);
 
         $tournamentId = (int) $validated['tournament_id'];
+
+        if (TournamentRegistration::query()->where('tournament_id', $tournamentId)->exists()
+            && ! TournamentRegistration::tournamentHasCompleteUniqueSeeds($tournamentId)) {
+            return redirect()
+                ->route(
+                    $this->resolveTournamentRedirectRoute($request),
+                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
+                )
+                ->withErrors([
+                    'round_robin' => __('Please assign seeds to all teams before generating schedules.'),
+                ]);
+        }
+
         $pitches = Pitch::query()
             ->where('tournament_id', $tournamentId)
             ->orderBy('sort_order')
@@ -1792,7 +1968,7 @@ class TournamentController extends Controller
                     $this->resolveTournamentRedirectParameters($request, $tournamentId),
                 )
                 ->withErrors([
-                    'round_robin' => 'Add Pitch 1 and Pitch 2 first before generating the bracket round robin schedule.',
+                    'round_robin' => __('Add at least one playing field to the tournament before generating the bracket round robin schedule.'),
                 ]);
         }
 
@@ -2109,16 +2285,30 @@ class TournamentController extends Controller
      */
     public function updateMatch(Request $request, TournamentMatch $match): RedirectResponse
     {
-        $tournamentId = $match->tournament_id;
+        $tournamentId = (int) $match->tournament_id;
+        $isRoundRobin = $match->stage === 'round_robin';
+        $isTrackedSmallSchedule = $isRoundRobin && (
+            SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match)
+            || SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($match)
+        );
+        $useGameScope = $isTrackedSmallSchedule && $request->string('match_edit_scope')->toString() === 'game';
 
-        $validator = Validator::make($request->all(), [
+        $rules = [
             'pitch_id' => ['nullable', 'integer', 'exists:pitches,id'],
             'home_registration_id' => ['required', 'integer', 'exists:tournament_registrations,id'],
             'away_registration_id' => ['required', 'integer', 'different:home_registration_id', 'exists:tournament_registrations,id'],
             'round_label' => ['nullable', 'string', 'max:255'],
             'match_number' => ['nullable', 'integer', 'min:1', 'max:9999'],
-            'scheduled_at' => ['nullable', 'date'],
-        ]);
+        ];
+
+        if ($isRoundRobin && ! $useGameScope) {
+            $rules['start_time'] = ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'];
+            $rules['end_time'] = ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'];
+        } elseif (! $isRoundRobin) {
+            $rules['scheduled_at'] = ['nullable', 'date'];
+        }
+
+        $validator = Validator::make($request->all(), $rules);
 
         $validator->after(function ($validator) use ($request, $tournamentId, $match): void {
             if ($request->filled('pitch_id')
@@ -2185,15 +2375,63 @@ class TournamentController extends Controller
             $pitchAssignedBy = $newPitchId !== null ? $request->user()->id : null;
         }
 
-        $match->update([
+        $scheduledAt = null;
+        $scheduledEndsAt = null;
+
+        if ($isRoundRobin && ! $useGameScope) {
+            $tournament = Tournament::query()->findOrFail($tournamentId);
+            $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+
+            $date = $match->scheduled_at?->timezone($tz)->toDateString()
+                ?? $match->scheduled_ends_at?->timezone($tz)->toDateString()
+                ?? CarbonImmutable::now($tz)->toDateString();
+
+            [$y, $m, $d] = array_map('intval', explode('-', $date, 3));
+            $startParts = explode(':', (string) $validated['start_time']);
+            $endParts = explode(':', (string) $validated['end_time']);
+            $startHour = (int) ($startParts[0] ?? 0);
+            $startMin = (int) ($startParts[1] ?? 0);
+            $endHour = (int) ($endParts[0] ?? 0);
+            $endMin = (int) ($endParts[1] ?? 0);
+
+            $start = CarbonImmutable::create($y, $m, $d, $startHour, $startMin, 0, $tz);
+            $end = CarbonImmutable::create($y, $m, $d, $endHour, $endMin, 0, $tz);
+
+            if (! $end->greaterThan($start)) {
+                throw ValidationException::withMessages([
+                    'end_time' => __('End time must be after start time.'),
+                ]);
+            }
+
+            $scheduledAt = $start->utc();
+            $scheduledEndsAt = $end->utc();
+        } elseif (! $isRoundRobin) {
+            $scheduledAt = isset($validated['scheduled_at']) && $validated['scheduled_at'] !== null && $validated['scheduled_at'] !== ''
+                ? CarbonImmutable::parse((string) $validated['scheduled_at'])
+                : null;
+            $scheduledEndsAt = $match->scheduled_ends_at;
+        }
+
+        $payload = [
             'pitch_id' => $newPitchId,
             'pitch_assigned_by' => $pitchAssignedBy,
             'home_registration_id' => $validated['home_registration_id'],
             'away_registration_id' => $validated['away_registration_id'],
-            'round_label' => $this->normalizeNullableString($validated['round_label'] ?? null),
             'match_number' => $validated['match_number'] ?? null,
-            'scheduled_at' => $validated['scheduled_at'] ?? null,
-        ]);
+        ];
+
+        if (! ($isRoundRobin && $useGameScope)) {
+            $payload['round_label'] = $this->normalizeNullableString($validated['round_label'] ?? null);
+        }
+
+        if ($isRoundRobin && ! $useGameScope) {
+            $payload['scheduled_at'] = $scheduledAt;
+            $payload['scheduled_ends_at'] = $scheduledEndsAt;
+        } elseif (! $isRoundRobin) {
+            $payload['scheduled_at'] = $scheduledAt;
+        }
+
+        $match->update($payload);
 
         return redirect()
             ->route(
@@ -2260,7 +2498,7 @@ class TournamentController extends Controller
         $wasCrossoverMatch = $match->stage === 'crossover';
 
         DB::transaction(function () use ($match): void {
-            $match->delete();
+            $match->forceDelete();
         });
 
         if ($wasCrossoverMatch) {
@@ -2276,15 +2514,604 @@ class TournamentController extends Controller
     }
 
     /**
+     * Remove both Day 1 small-tournament fixed grid matches for one schedule row (same time slot).
+     */
+    public function destroySmallDayOneScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        $validated = $request->validate([
+            'match_numbers' => ['required', 'array', 'size:2'],
+            'match_numbers.*' => ['integer', 'min:1'],
+        ]);
+
+        $nums = array_values(array_map(fn ($n): int => (int) $n, $validated['match_numbers']));
+        sort($nums);
+
+        if ($nums[1] !== $nums[0] + 1) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => __('Match numbers must be a consecutive pair (e.g. 1 and 2).')]);
+        }
+
+        $markerPrefix = SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX;
+
+        $matches = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('stage', 'round_robin')
+            ->whereIn('match_number', $nums)
+            ->where('notes', 'like', '%'.$markerPrefix.'%')
+            ->orderBy('match_number')
+            ->get();
+
+        if ($matches->count() !== 2) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => __('Could not find both games for this Day 1 schedule row.')]);
+        }
+
+        $blockedMessage = __('Cannot remove this schedule row because one or more games already has scores or is in progress.');
+
+        foreach ($matches as $match) {
+            if (in_array($match->status, [TournamentMatch::STATUS_LIVE, TournamentMatch::STATUS_COMPLETED], true)) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+
+            if ($match->home_score !== null || $match->away_score !== null) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+
+            if ($match->scoreLogs()->exists() || $match->playerStats()->exists() || $match->spiritScores()->exists()) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+        }
+
+        DB::transaction(function () use ($matches): void {
+            foreach ($matches as $match) {
+                $match->delete();
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day1-schedule-row-deleted');
+    }
+
+    /**
+     * Remove both Day 2 small-tournament fixed grid matches for one schedule row (same time slot).
+     */
+    public function destroySmallDayTwoScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        $validated = $request->validate([
+            'match_numbers' => ['required', 'array', 'size:2'],
+            'match_numbers.*' => ['integer', 'min:'.SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER],
+        ]);
+
+        $nums = array_values(array_map(fn ($n): int => (int) $n, $validated['match_numbers']));
+        sort($nums);
+
+        if ($nums[1] !== $nums[0] + 1) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => __('Match numbers must be a consecutive pair (e.g. 25 and 26).')]);
+        }
+
+        $markerPrefix = SmallFixedRoundRobinDayTwoSchedule::MARKER_PREFIX;
+
+        $matches = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->where('stage', 'round_robin')
+            ->whereIn('match_number', $nums)
+            ->where('notes', 'like', '%'.$markerPrefix.'%')
+            ->orderBy('match_number')
+            ->get();
+
+        if ($matches->count() !== 2) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => __('Could not find both games for this Day 2 schedule row.')]);
+        }
+
+        $blockedMessage = __('Cannot remove this schedule because one or more games already has scores or is in progress.');
+
+        foreach ($matches as $match) {
+            if (in_array($match->status, [TournamentMatch::STATUS_LIVE, TournamentMatch::STATUS_COMPLETED], true)) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+
+            if ($match->home_score !== null || $match->away_score !== null) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+
+            if ($match->scoreLogs()->exists() || $match->playerStats()->exists() || $match->spiritScores()->exists()) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors(['schedule_row' => $blockedMessage]);
+            }
+        }
+
+        DB::transaction(function () use ($matches): void {
+            foreach ($matches as $match) {
+                $match->delete();
+            }
+        });
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day2-schedule-row-deleted');
+    }
+
+    public function storeSmallDayOneRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        try {
+            $row = $this->validatedSmallDayOneAdminScheduleSlotRow($request, $tournament, false);
+            SmallFixedRoundRobinDayOneSchedule::assertAdminDayOneSlotRowDoesNotViolatePeerRows($tournament, $row, null);
+            SmallFixedRoundRobinDayOneSchedule::persistTrackedSlotRowFromAdmin($tournament, $row);
+        } catch (ValidationException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($exception->errors())
+                ->withInput();
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day1_schedule' => $exception->getMessage()])
+                ->withInput();
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day1-schedule-row-created');
+    }
+
+    public function updateSmallDayOneRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        try {
+            [$row, $left, $right] = $this->validatedSmallDayOneAdminScheduleSlotRowWithMatches($request, $tournament);
+            SmallFixedRoundRobinDayOneSchedule::assertAdminDayOneSlotRowDoesNotViolatePeerRows($tournament, $row, [(int) $left->id, (int) $right->id]);
+            SmallFixedRoundRobinDayOneSchedule::updateTrackedSlotRowFromAdmin($tournament, $left, $right, $row);
+        } catch (ValidationException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($exception->errors())
+                ->withInput();
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day1_schedule' => $exception->getMessage()])
+                ->withInput();
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day1-schedule-row-updated');
+    }
+
+    public function restoreSmallDayOneRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        $validated = $request->validate([
+            'slot_ulid' => ['nullable', 'string', 'size:26'],
+            'match_numbers' => ['required_without:slot_ulid', 'array', 'size:2'],
+            'match_numbers.*' => ['integer', 'min:1'],
+        ]);
+
+        try {
+            SmallFixedRoundRobinDayOneSchedule::restoreTrackedDayOneSlot(
+                $tournament,
+                isset($validated['slot_ulid']) ? (string) $validated['slot_ulid'] : null,
+                array_values($validated['match_numbers'] ?? []),
+            );
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => $exception->getMessage()]);
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day1-schedule-row-restored');
+    }
+
+    public function storeSmallDayTwoRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        if (SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament) === 0) {
+            abort(404);
+        }
+
+        try {
+            $row = $this->validatedSmallDayTwoAdminScheduleSlotRow($request, $tournament, false);
+            SmallFixedRoundRobinDayTwoSchedule::assertAdminDayTwoSlotRowDoesNotViolatePeerRows($tournament, $row, null);
+            SmallFixedRoundRobinDayTwoSchedule::persistTrackedDayTwoSlotRowFromAdmin($tournament, $row);
+        } catch (ValidationException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($exception->errors())
+                ->withInput();
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day2_schedule' => $exception->getMessage()])
+                ->withInput();
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day2-schedule-row-created');
+    }
+
+    public function updateSmallDayTwoRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        if (SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament) === 0) {
+            abort(404);
+        }
+
+        try {
+            [$row, $left, $right] = $this->validatedSmallDayTwoAdminScheduleSlotRowWithMatches($request, $tournament);
+            SmallFixedRoundRobinDayTwoSchedule::assertAdminDayTwoSlotRowDoesNotViolatePeerRows($tournament, $row, [(int) $left->id, (int) $right->id]);
+            SmallFixedRoundRobinDayTwoSchedule::updateTrackedDayTwoSlotRowFromAdmin($tournament, $left, $right, $row);
+        } catch (ValidationException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors($exception->errors())
+                ->withInput();
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day2_schedule' => $exception->getMessage()])
+                ->withInput();
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day2-schedule-row-updated');
+    }
+
+    public function restoreSmallDayTwoRoundRobinScheduleRow(Request $request, Tournament $tournament): RedirectResponse
+    {
+        if ($tournament->registrations()->count() >= self::MINIMUM_BRACKET_TEAM_COUNT) {
+            abort(404);
+        }
+
+        $validated = $request->validate([
+            'slot_ulid' => ['nullable', 'string', 'size:26'],
+            'match_numbers' => ['required_without:slot_ulid', 'array', 'size:2'],
+            'match_numbers.*' => ['integer', 'min:'.SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER],
+        ]);
+
+        try {
+            SmallFixedRoundRobinDayTwoSchedule::restoreTrackedDayTwoSlot(
+                $tournament,
+                isset($validated['slot_ulid']) ? (string) $validated['slot_ulid'] : null,
+                array_values($validated['match_numbers'] ?? []),
+            );
+        } catch (InvalidArgumentException $exception) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['schedule_row' => $exception->getMessage()]);
+        }
+
+        return redirect()
+            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+            ->with('status', 'small-day2-schedule-row-restored');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function validatedSmallDayOneAdminScheduleSlotRow(Request $request, Tournament $tournament, bool $forUpdate): array
+    {
+        $tournamentId = (int) $tournament->id;
+        $p = 'day1_slot';
+
+        $rules = [
+            'day1_slot_modal' => ['nullable', 'string', 'max:128'],
+            "{$p}.round" => ['required', 'integer', 'min:1'],
+            "{$p}.start_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            "{$p}.end_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            "{$p}.pitch1_pitch_id" => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.pitch2_pitch_id" => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match1_match_number" => ['required', 'integer', 'min:1'],
+            "{$p}.match2_match_number" => ['required', 'integer', 'min:1'],
+            "{$p}.match1_home_registration_id" => ['required', 'integer', 'different:'.$p.'.match1_away_registration_id', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match1_away_registration_id" => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match2_home_registration_id" => ['required', 'integer', 'different:'.$p.'.match2_away_registration_id', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match2_away_registration_id" => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.status" => ['nullable', 'string', Rule::in(['upcoming', 'live', 'completed'])],
+        ];
+
+        if ($forUpdate) {
+            $rules["{$p}.pitch1_match_id"] = ['required', 'integer', Rule::exists('matches', 'id')->where('tournament_id', $tournamentId)];
+            $rules["{$p}.pitch2_match_id"] = ['required', 'integer', Rule::exists('matches', 'id')->where('tournament_id', $tournamentId)];
+        }
+
+        $validated = $request->validate($rules);
+        $slot = $validated[$p];
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+        $dayDate = SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO;
+
+        $start = CarbonImmutable::parse($dayDate.' '.$slot['start_time'].':00', $tz);
+        $end = CarbonImmutable::parse($dayDate.' '.$slot['end_time'].':00', $tz);
+
+        if (! $end->greaterThan($start)) {
+            throw ValidationException::withMessages([
+                "{$p}.end_time" => __('End time must be after start time for round :round.', ['round' => $slot['round']]),
+            ]);
+        }
+
+        $m1 = (int) $slot['match1_match_number'];
+        $m2 = (int) $slot['match2_match_number'];
+
+        if ($m2 !== $m1 + 1) {
+            throw ValidationException::withMessages([
+                "{$p}.match2_match_number" => __('Game numbers in each row must be consecutive (game B = game A + 1).'),
+            ]);
+        }
+
+        unset($slot['pitch1_match_id'], $slot['pitch2_match_id']);
+
+        return array_merge($slot, ['date' => $dayDate]);
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: TournamentMatch, 2: TournamentMatch}
+     */
+    protected function validatedSmallDayOneAdminScheduleSlotRowWithMatches(Request $request, Tournament $tournament): array
+    {
+        $row = $this->validatedSmallDayOneAdminScheduleSlotRow($request, $tournament, true);
+        [$left, $right] = $this->resolveSmallDayOneAdminSlotPairMatches(
+            $tournament,
+            (int) $request->integer('day1_slot.pitch1_match_id'),
+            (int) $request->integer('day1_slot.pitch2_match_id'),
+        );
+
+        return [$row, $left, $right];
+    }
+
+    /**
+     * @return array{0: TournamentMatch, 1: TournamentMatch}
+     */
+    protected function resolveSmallDayOneAdminSlotPairMatches(Tournament $tournament, int $matchIdOne, int $matchIdTwo): array
+    {
+        $m1 = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereKey($matchIdOne)
+            ->firstOrFail();
+
+        $m2 = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereKey($matchIdTwo)
+            ->firstOrFail();
+
+        if ($m1->stage !== 'round_robin' || $m2->stage !== 'round_robin') {
+            abort(404);
+        }
+
+        if (! SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m1) || ! SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m2)) {
+            abort(404);
+        }
+
+        $sameSlot = (filled($m1->schedule_slot_ulid) && filled($m2->schedule_slot_ulid) && $m1->schedule_slot_ulid === $m2->schedule_slot_ulid)
+            || abs((int) $m1->match_number - (int) $m2->match_number) === 1;
+
+        if (! $sameSlot) {
+            throw ValidationException::withMessages([
+                'day1_slot.pitch2_match_id' => __('The two matches must belong to the same schedule time slot.'),
+            ]);
+        }
+
+        $tournament->loadMissing(['pitches' => fn ($q) => $q->orderBy('sort_order')->orderBy('id')]);
+        $pitches = $tournament->pitches->values();
+        $pitch1 = $pitches->first();
+        $pitch2 = $pitches->skip(1)->first() ?? $pitch1;
+
+        if (! $pitch1 instanceof Pitch || ! $pitch2 instanceof Pitch) {
+            abort(404);
+        }
+
+        return SmallFixedRoundRobinDayOneSchedule::orderMatchesForFixedScheduleColumns($m1, $m2, $pitch1, $pitch2);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function validatedSmallDayTwoAdminScheduleSlotRow(Request $request, Tournament $tournament, bool $forUpdate): array
+    {
+        $tournamentId = (int) $tournament->id;
+        $p = 'day2_slot';
+        $minGame = SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER;
+
+        $rules = [
+            'day2_slot_modal' => ['nullable', 'string', 'max:128'],
+            "{$p}.round" => ['required', 'integer', 'min:1'],
+            "{$p}.start_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            "{$p}.end_time" => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            "{$p}.pitch1_pitch_id" => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.pitch2_pitch_id" => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match1_match_number" => ['required', 'integer', 'min:'.$minGame],
+            "{$p}.match2_match_number" => ['required', 'integer', 'min:'.$minGame],
+            "{$p}.match1_home_registration_id" => ['required', 'integer', 'different:'.$p.'.match1_away_registration_id', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match1_away_registration_id" => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match2_home_registration_id" => ['required', 'integer', 'different:'.$p.'.match2_away_registration_id', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.match2_away_registration_id" => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            "{$p}.status" => ['nullable', 'string', Rule::in(['upcoming', 'live', 'completed'])],
+        ];
+
+        if ($forUpdate) {
+            $rules["{$p}.pitch1_match_id"] = ['required', 'integer', Rule::exists('matches', 'id')->where('tournament_id', $tournamentId)];
+            $rules["{$p}.pitch2_match_id"] = ['required', 'integer', Rule::exists('matches', 'id')->where('tournament_id', $tournamentId)];
+        }
+
+        $validated = $request->validate($rules);
+        $slot = $validated[$p];
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+        $dayDate = SmallFixedRoundRobinDayTwoSchedule::SCHEDULE_DATE_ISO;
+
+        $start = CarbonImmutable::parse($dayDate.' '.$slot['start_time'].':00', $tz);
+        $end = CarbonImmutable::parse($dayDate.' '.$slot['end_time'].':00', $tz);
+
+        if (! $end->greaterThan($start)) {
+            throw ValidationException::withMessages([
+                "{$p}.end_time" => __('End time must be after start time for round :round.', ['round' => $slot['round']]),
+            ]);
+        }
+
+        $m1 = (int) $slot['match1_match_number'];
+        $m2 = (int) $slot['match2_match_number'];
+
+        if ($m2 !== $m1 + 1 || $m1 < $minGame) {
+            throw ValidationException::withMessages([
+                "{$p}.match2_match_number" => __('Game numbers in each Day 2 row must be consecutive (game B = game A + 1) and at least :min.', ['min' => $minGame]),
+            ]);
+        }
+
+        unset($slot['pitch1_match_id'], $slot['pitch2_match_id']);
+
+        return array_merge($slot, ['date' => $dayDate]);
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: TournamentMatch, 2: TournamentMatch}
+     */
+    protected function validatedSmallDayTwoAdminScheduleSlotRowWithMatches(Request $request, Tournament $tournament): array
+    {
+        $row = $this->validatedSmallDayTwoAdminScheduleSlotRow($request, $tournament, true);
+        [$left, $right] = $this->resolveSmallDayTwoAdminSlotPairMatches(
+            $tournament,
+            (int) $request->integer('day2_slot.pitch1_match_id'),
+            (int) $request->integer('day2_slot.pitch2_match_id'),
+        );
+
+        return [$row, $left, $right];
+    }
+
+    /**
+     * @return array{0: TournamentMatch, 1: TournamentMatch}
+     */
+    protected function resolveSmallDayTwoAdminSlotPairMatches(Tournament $tournament, int $matchIdOne, int $matchIdTwo): array
+    {
+        $m1 = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereKey($matchIdOne)
+            ->firstOrFail();
+
+        $m2 = TournamentMatch::query()
+            ->where('tournament_id', $tournament->id)
+            ->whereKey($matchIdTwo)
+            ->firstOrFail();
+
+        if ($m1->stage !== 'round_robin' || $m2->stage !== 'round_robin') {
+            abort(404);
+        }
+
+        if (! SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($m1) || ! SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($m2)) {
+            abort(404);
+        }
+
+        $sameSlot = (filled($m1->schedule_slot_ulid) && filled($m2->schedule_slot_ulid) && $m1->schedule_slot_ulid === $m2->schedule_slot_ulid)
+            || abs((int) $m1->match_number - (int) $m2->match_number) === 1;
+
+        if (! $sameSlot) {
+            throw ValidationException::withMessages([
+                'day2_slot.pitch2_match_id' => __('The two matches must belong to the same schedule time slot.'),
+            ]);
+        }
+
+        $tournament->loadMissing(['pitches' => fn ($q) => $q->orderBy('sort_order')->orderBy('id')]);
+        $pitches = $tournament->pitches->values();
+        $pitch1 = $pitches->first();
+        $pitch2 = $pitches->skip(1)->first() ?? $pitch1;
+
+        if (! $pitch1 instanceof Pitch || ! $pitch2 instanceof Pitch) {
+            abort(404);
+        }
+
+        return SmallFixedRoundRobinDayOneSchedule::orderMatchesForFixedScheduleColumns($m1, $m2, $pitch1, $pitch2);
+    }
+
+    /**
      * Persist the fixed Day 1 round robin grid (Pitch 1 & Pitch 2) for tournaments below the bracket threshold.
      *
-     * Day 2 is upserted alongside Day 1 so the admin only needs one sync action; Day 2 failures surface
-     * as a separate error key so Day 1 remains useful even when the Day 2 roster is incomplete.
+     * Optional {@code day1_rows} carries start/end times, team matchups, game numbers, and optional row status.
+     * The calendar date for every row is {@see SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO} (the DAY 1 header date); pitches are assigned server-side.
+     * When omitted, {@see SmallFixedRoundRobinDayOneSchedule::sync()} uses built-in slot times after ensuring pitches exist.
+     * Day 2 is synced in the same request when its grid exists, using {@code day2_rows} when posted or the same built-in path.
      */
     public function syncSmallDayOneRoundRobinSchedule(Request $request, Tournament $tournament): RedirectResponse
     {
+        $seedBlock = $this->scheduleGenerationBlockedBySeedsMessage($tournament);
+        if ($seedBlock !== null) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day1_schedule' => $seedBlock]);
+        }
+
+        $day1Rows = null;
+        $day2Rows = null;
+
         try {
-            SmallFixedRoundRobinDayOneSchedule::sync($tournament);
+            if ($request->boolean('small_day1_sync_from_grid')) {
+                $day1Input = $request->input('day1_rows');
+
+                if (! is_array($day1Input) || $day1Input === []) {
+                    return redirect()
+                        ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                        ->withErrors(['small_day1_schedule' => __('Add at least one schedule row before syncing.')]);
+                }
+            }
+
+            if (
+                SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament) > 0
+                && $request->boolean('small_day2_sync_from_grid')
+            ) {
+                $day2Input = $request->input('day2_rows');
+                if (! is_array($day2Input) || $day2Input === []) {
+                    return redirect()
+                        ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                        ->withErrors(['small_day2_schedule' => __('Add at least one Day 2 schedule row before syncing.')]);
+                }
+            }
+
+            if ($request->filled('day1_rows')) {
+                $day1Rows = $this->validateSmallDayOneScheduleRows($request, $tournament);
+            }
+
+            SmallFixedRoundRobinDayOneSchedule::sync($tournament, $day1Rows);
         } catch (InvalidArgumentException $exception) {
             return redirect()
                 ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
@@ -2292,7 +3119,15 @@ class TournamentController extends Controller
         }
 
         try {
-            SmallFixedRoundRobinDayTwoSchedule::sync($tournament);
+            if (SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament) > 0) {
+                if ($request->filled('day2_rows')) {
+                    $day2Rows = $this->validateSmallDayTwoScheduleRows($request, $tournament);
+                }
+
+                SmallFixedRoundRobinDayTwoSchedule::sync($tournament, $day2Rows);
+            } else {
+                SmallFixedRoundRobinDayTwoSchedule::sync($tournament, null);
+            }
         } catch (InvalidArgumentException $exception) {
             return redirect()
                 ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
@@ -2300,9 +3135,18 @@ class TournamentController extends Controller
                 ->withErrors(['small_day2_schedule' => $exception->getMessage()]);
         }
 
+        $warnings = [];
+        if (is_array($day1Rows)) {
+            $warnings = array_merge($warnings, SmallRoundRobinUnsyncedFormWarnings::dayOneWarnings($day1Rows));
+        }
+        if (is_array($day2Rows)) {
+            $warnings = array_merge($warnings, SmallRoundRobinUnsyncedFormWarnings::dayTwoWarnings($day2Rows, $tournament));
+        }
+
         return redirect()
             ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
-            ->with('status', 'small-day1-schedule-synced');
+            ->with('status', 'small-day1-schedule-synced')
+            ->with('small_rr_warnings', array_values(array_unique($warnings)));
     }
 
     /**
@@ -2310,17 +3154,462 @@ class TournamentController extends Controller
      */
     public function syncSmallDayTwoRoundRobinSchedule(Request $request, Tournament $tournament): RedirectResponse
     {
+        $seedBlock = $this->scheduleGenerationBlockedBySeedsMessage($tournament);
+        if ($seedBlock !== null) {
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->withErrors(['small_day2_schedule' => $seedBlock]);
+        }
+
+        $day2Rows = null;
+
         try {
-            SmallFixedRoundRobinDayTwoSchedule::sync($tournament);
+            if (SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament) === 0) {
+                SmallFixedRoundRobinDayTwoSchedule::sync($tournament, null);
+            } else {
+                if ($request->boolean('small_day2_sync_from_grid')) {
+                    $day2Input = $request->input('day2_rows');
+                    if (! is_array($day2Input) || $day2Input === []) {
+                        return redirect()
+                            ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                            ->withErrors(['small_day2_schedule' => __('Add at least one schedule row before syncing.')]);
+                    }
+                }
+
+                if ($request->filled('day2_rows')) {
+                    $day2Rows = $this->validateSmallDayTwoScheduleRows($request, $tournament);
+                }
+
+                SmallFixedRoundRobinDayTwoSchedule::sync($tournament, $day2Rows);
+            }
         } catch (InvalidArgumentException $exception) {
             return redirect()
                 ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
                 ->withErrors(['small_day2_schedule' => $exception->getMessage()]);
         }
 
+        $warnings = is_array($day2Rows) ? SmallRoundRobinUnsyncedFormWarnings::dayTwoWarnings($day2Rows, $tournament) : [];
+
         return redirect()
             ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
-            ->with('status', 'small-day2-schedule-synced');
+            ->with('status', 'small-day2-schedule-synced')
+            ->with('small_rr_warnings', array_values(array_unique($warnings)));
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    protected function validateSmallDayOneScheduleRows(Request $request, Tournament $tournament): array
+    {
+        $tournamentId = (int) $tournament->id;
+
+        $validated = $request->validate([
+            'day1_rows' => ['required', 'array', 'min:1'],
+            'day1_rows.*.round' => ['required', 'integer', 'min:1'],
+            'day1_rows.*.match1_match_number' => ['nullable', 'integer', 'min:1'],
+            'day1_rows.*.match2_match_number' => ['nullable', 'integer', 'min:1'],
+            'day1_rows.*.start_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'day1_rows.*.end_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'day1_rows.*.pitch1_pitch_id' => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.pitch2_pitch_id' => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.match1_home_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.match1_away_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.match2_home_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.match2_away_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day1_rows.*.status' => ['nullable', 'string', Rule::in(['upcoming', 'live', 'completed'])],
+        ]);
+
+        $dayDate = SmallFixedRoundRobinDayOneSchedule::SCHEDULE_DATE_ISO;
+        if (! CarbonImmutable::hasFormat($dayDate, 'Y-m-d')) {
+            throw ValidationException::withMessages([
+                'day1_rows' => __('The Day 1 schedule date is not configured correctly.'),
+            ]);
+        }
+
+        $tournament->loadMissing(['pitches' => fn ($q) => $q->orderBy('sort_order')->orderBy('id')]);
+
+        if ($tournament->pitches->isEmpty()) {
+            throw ValidationException::withMessages([
+                'day1_rows' => __('Add at least one tournament pitch before syncing the schedule.'),
+            ]);
+        }
+
+        $pitchById = $tournament->pitches->keyBy('id');
+
+        $rows = collect($validated['day1_rows'])
+            ->map(function (array $row, int $index) use ($dayDate, $pitchById): array {
+                $m1 = (int) ($row['match1_match_number'] ?? (($index * 2) + 1));
+                $m2 = (int) ($row['match2_match_number'] ?? (($index * 2) + 2));
+                $pid1 = (int) $row['pitch1_pitch_id'];
+                $pid2 = (int) $row['pitch2_pitch_id'];
+
+                if (! $pitchById->has($pid1)) {
+                    throw ValidationException::withMessages([
+                        "day1_rows.{$index}.pitch1_pitch_id" => __('Invalid pitch for this tournament.'),
+                    ]);
+                }
+
+                if (! $pitchById->has($pid2)) {
+                    throw ValidationException::withMessages([
+                        "day1_rows.{$index}.pitch2_pitch_id" => __('Invalid pitch for this tournament.'),
+                    ]);
+                }
+
+                return array_merge($row, [
+                    'match1_match_number' => $m1,
+                    'match2_match_number' => $m2,
+                    'date' => $dayDate,
+                    'pitch1_pitch_id' => $pid1,
+                    'pitch2_pitch_id' => $pid2,
+                ]);
+            })
+            ->values()
+            ->all();
+
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+
+        foreach ($rows as $index => $row) {
+            $start = CarbonImmutable::parse($row['date'].' '.$row['start_time'].':00', $tz);
+            $end = CarbonImmutable::parse($row['date'].' '.$row['end_time'].':00', $tz);
+
+            if (! $end->greaterThan($start)) {
+                throw ValidationException::withMessages([
+                    "day1_rows.{$index}.end_time" => __('End time must be after start time for round :round.', ['round' => $row['round']]),
+                ]);
+            }
+
+            $gameNum1 = (int) $row['match1_match_number'];
+            $gameNum2 = (int) $row['match2_match_number'];
+
+            if ($gameNum2 !== $gameNum1 + 1) {
+                throw ValidationException::withMessages([
+                    "day1_rows.{$index}.match2_match_number" => __('Game numbers in each row must be consecutive (game B = game A + 1).'),
+                ]);
+            }
+
+            if ((int) $row['match1_home_registration_id'] === (int) $row['match1_away_registration_id']) {
+                throw ValidationException::withMessages([
+                    "day1_rows.{$index}.match1_away_registration_id" => __('Game :num: home and away cannot be the same team.', ['num' => $gameNum1]),
+                ]);
+            }
+
+            if ((int) $row['match2_home_registration_id'] === (int) $row['match2_away_registration_id']) {
+                throw ValidationException::withMessages([
+                    "day1_rows.{$index}.match2_away_registration_id" => __('Game :num: home and away cannot be the same team.', ['num' => $gameNum2]),
+                ]);
+            }
+        }
+
+        $rounds = collect($rows)->pluck('round')->all();
+
+        if (count(array_unique($rounds)) !== count($rows)) {
+            throw ValidationException::withMessages([
+                'day1_rows' => __('Each schedule row must have a unique round number.'),
+            ]);
+        }
+
+        $allGameNumbers = [];
+        foreach ($rows as $row) {
+            $allGameNumbers[] = (int) $row['match1_match_number'];
+            $allGameNumbers[] = (int) $row['match2_match_number'];
+        }
+
+        if ($allGameNumbers === []) {
+            throw ValidationException::withMessages([
+                'day1_rows' => __('Add at least one schedule row before syncing.'),
+            ]);
+        }
+
+        foreach ($allGameNumbers as $n) {
+            if ($n < 1) {
+                throw ValidationException::withMessages([
+                    'day1_rows' => __('Each game number must be a positive integer.'),
+                ]);
+            }
+        }
+
+        if (count($allGameNumbers) !== count(array_unique($allGameNumbers))) {
+            throw ValidationException::withMessages([
+                'day1_rows' => __('Each game number must be unique across the schedule.'),
+            ]);
+        }
+
+        foreach ($rows as $i => $rowA) {
+            $regsA = [
+                (int) $rowA['match1_home_registration_id'],
+                (int) $rowA['match1_away_registration_id'],
+                (int) $rowA['match2_home_registration_id'],
+                (int) $rowA['match2_away_registration_id'],
+            ];
+            $startA = CarbonImmutable::parse($rowA['date'].' '.$rowA['start_time'].':00', $tz);
+            $endA = CarbonImmutable::parse($rowA['date'].' '.$rowA['end_time'].':00', $tz);
+
+            foreach ($rows as $j => $rowB) {
+                if ($j <= $i) {
+                    continue;
+                }
+
+                $startB = CarbonImmutable::parse($rowB['date'].' '.$rowB['start_time'].':00', $tz);
+                $endB = CarbonImmutable::parse($rowB['date'].' '.$rowB['end_time'].':00', $tz);
+
+                if (! $startA->lt($endB) || ! $startB->lt($endA)) {
+                    continue;
+                }
+
+                $regsB = [
+                    (int) $rowB['match1_home_registration_id'],
+                    (int) $rowB['match1_away_registration_id'],
+                    (int) $rowB['match2_home_registration_id'],
+                    (int) $rowB['match2_away_registration_id'],
+                ];
+
+                foreach ($regsA as $ra) {
+                    foreach ($regsB as $rb) {
+                        if ($ra === $rb) {
+                            throw ValidationException::withMessages([
+                                'day1_rows' => __('The same team is scheduled in overlapping time slots (rounds :r1 and :r2).', [
+                                    'r1' => $rowA['round'],
+                                    'r2' => $rowB['round'],
+                                ]),
+                            ]);
+                        }
+                    }
+                }
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    protected function validateSmallDayTwoScheduleRows(Request $request, Tournament $tournament): array
+    {
+        $expected = SmallFixedRoundRobinDayTwoSchedule::dayTwoRoundSlotCount($tournament);
+
+        if ($expected === 0) {
+            return [];
+        }
+
+        $tournamentId = (int) $tournament->id;
+
+        $validated = $request->validate([
+            'day2_rows' => ['required', 'array', 'min:1'],
+            'day2_rows.*.round' => ['required', 'integer', 'min:1'],
+            'day2_rows.*.match1_match_number' => ['nullable', 'integer', 'min:1'],
+            'day2_rows.*.match2_match_number' => ['nullable', 'integer', 'min:1'],
+            'day2_rows.*.start_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'day2_rows.*.end_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'day2_rows.*.pitch1_pitch_id' => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.pitch2_pitch_id' => ['required', 'integer', Rule::exists('pitches', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.match1_home_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.match1_away_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.match2_home_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.match2_away_registration_id' => ['required', 'integer', Rule::exists('tournament_registrations', 'id')->where('tournament_id', $tournamentId)],
+            'day2_rows.*.status' => ['nullable', 'string', Rule::in(['upcoming', 'live', 'completed'])],
+        ]);
+
+        $dayDate = SmallFixedRoundRobinDayTwoSchedule::SCHEDULE_DATE_ISO;
+        if (! CarbonImmutable::hasFormat($dayDate, 'Y-m-d')) {
+            throw ValidationException::withMessages([
+                'day2_rows' => __('The Day 2 schedule date is not configured correctly.'),
+            ]);
+        }
+
+        $tournament->loadMissing(['pitches' => fn ($q) => $q->orderBy('sort_order')->orderBy('id')]);
+
+        if ($tournament->pitches->isEmpty()) {
+            throw ValidationException::withMessages([
+                'day2_rows' => __('Add at least one tournament pitch before syncing the schedule.'),
+            ]);
+        }
+
+        $pitchById = $tournament->pitches->keyBy('id');
+
+        $rows = collect($validated['day2_rows'])
+            ->values()
+            ->map(function (array $row, int $index) use ($dayDate, $pitchById): array {
+                $m1 = (int) ($row['match1_match_number'] ?? 0);
+                $m2 = (int) ($row['match2_match_number'] ?? 0);
+                if ($m1 <= 0) {
+                    $m1 = SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER + ($index * 2);
+                }
+                if ($m2 <= 0) {
+                    $m2 = $m1 + 1;
+                }
+                $pid1 = (int) $row['pitch1_pitch_id'];
+                $pid2 = (int) $row['pitch2_pitch_id'];
+
+                if (! $pitchById->has($pid1)) {
+                    throw ValidationException::withMessages([
+                        "day2_rows.{$index}.pitch1_pitch_id" => __('Invalid pitch for this tournament.'),
+                    ]);
+                }
+
+                if (! $pitchById->has($pid2)) {
+                    throw ValidationException::withMessages([
+                        "day2_rows.{$index}.pitch2_pitch_id" => __('Invalid pitch for this tournament.'),
+                    ]);
+                }
+
+                return array_merge($row, [
+                    'match1_match_number' => $m1,
+                    'match2_match_number' => $m2,
+                    'date' => $dayDate,
+                    'pitch1_pitch_id' => $pid1,
+                    'pitch2_pitch_id' => $pid2,
+                ]);
+            })
+            ->all();
+
+        $tz = SmallFixedRoundRobinDayOneSchedule::tournamentTimezone($tournament);
+        $firstDay2Game = SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER;
+
+        foreach ($rows as $index => $row) {
+            $start = CarbonImmutable::parse($row['date'].' '.$row['start_time'].':00', $tz);
+            $end = CarbonImmutable::parse($row['date'].' '.$row['end_time'].':00', $tz);
+
+            if (! $end->greaterThan($start)) {
+                throw ValidationException::withMessages([
+                    "day2_rows.{$index}.end_time" => __('End time must be after start time for round :round.', ['round' => $row['round']]),
+                ]);
+            }
+
+            $gameNum1 = (int) ($row['match1_match_number'] ?? 0);
+            $gameNum2 = (int) ($row['match2_match_number'] ?? 0);
+
+            if ($gameNum1 < $firstDay2Game) {
+                throw ValidationException::withMessages([
+                    "day2_rows.{$index}.match1_match_number" => __('Day 2 game numbers must be :min or higher (Day 1 uses lower numbers).', ['min' => $firstDay2Game]),
+                ]);
+            }
+
+            if ($gameNum2 !== $gameNum1 + 1) {
+                throw ValidationException::withMessages([
+                    "day2_rows.{$index}.match2_match_number" => __('Game numbers in each row must be consecutive (game B = game A + 1).'),
+                ]);
+            }
+
+            if ((int) $row['match1_home_registration_id'] === (int) $row['match1_away_registration_id']) {
+                throw ValidationException::withMessages([
+                    "day2_rows.{$index}.match1_away_registration_id" => __('Game :num: home and away cannot be the same team.', ['num' => $gameNum1]),
+                ]);
+            }
+
+            if ((int) $row['match2_home_registration_id'] === (int) $row['match2_away_registration_id']) {
+                throw ValidationException::withMessages([
+                    "day2_rows.{$index}.match2_away_registration_id" => __('Game :num: home and away cannot be the same team.', ['num' => $gameNum2]),
+                ]);
+            }
+        }
+
+        $rounds = collect($rows)->pluck('round')->all();
+
+        if (count(array_unique($rounds)) !== count($rows)) {
+            throw ValidationException::withMessages([
+                'day2_rows' => __('Each schedule row must have a unique round number.'),
+            ]);
+        }
+
+        $allGameNumbers = [];
+        foreach ($rows as $row) {
+            $allGameNumbers[] = (int) $row['match1_match_number'];
+            $allGameNumbers[] = (int) $row['match2_match_number'];
+        }
+
+        foreach ($allGameNumbers as $n) {
+            if ($n < $firstDay2Game) {
+                throw ValidationException::withMessages([
+                    'day2_rows' => __('Each Day 2 game number must be :min or higher.', ['min' => $firstDay2Game]),
+                ]);
+            }
+        }
+
+        if (count($allGameNumbers) !== count(array_unique($allGameNumbers))) {
+            throw ValidationException::withMessages([
+                'day2_rows' => __('Each game number must be unique across Day 1 and Day 2 schedules.'),
+            ]);
+        }
+
+        $day1Marker = SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX;
+        $day1NumbersDb = TournamentMatch::query()
+            ->where('tournament_id', $tournamentId)
+            ->where('stage', 'round_robin')
+            ->where('notes', 'like', '%'.$day1Marker.'%')
+            ->pluck('match_number')
+            ->map(fn ($n): int => (int) $n)
+            ->all();
+
+        $day1NumbersRequest = [];
+        $day1Input = $request->input('day1_rows');
+        if (is_array($day1Input)) {
+            foreach ($day1Input as $r) {
+                if (! is_array($r)) {
+                    continue;
+                }
+                $day1NumbersRequest[] = (int) ($r['match1_match_number'] ?? 0);
+                $day1NumbersRequest[] = (int) ($r['match2_match_number'] ?? 0);
+            }
+        }
+
+        $reservedDay1 = array_values(array_unique(array_filter(
+            array_merge($day1NumbersDb, $day1NumbersRequest),
+            fn (int $n): bool => $n > 0
+        )));
+        foreach ($allGameNumbers as $n) {
+            if (in_array($n, $reservedDay1, true)) {
+                throw ValidationException::withMessages([
+                    'day2_rows' => __('Game number :num is already used on Day 1. Match numbers must be unique across both days.', ['num' => $n]),
+                ]);
+            }
+        }
+
+        foreach ($rows as $i => $rowA) {
+            $regsA = [
+                (int) $rowA['match1_home_registration_id'],
+                (int) $rowA['match1_away_registration_id'],
+                (int) $rowA['match2_home_registration_id'],
+                (int) $rowA['match2_away_registration_id'],
+            ];
+            $startA = CarbonImmutable::parse($rowA['date'].' '.$rowA['start_time'].':00', $tz);
+            $endA = CarbonImmutable::parse($rowA['date'].' '.$rowA['end_time'].':00', $tz);
+
+            foreach ($rows as $j => $rowB) {
+                if ($j <= $i) {
+                    continue;
+                }
+
+                $startB = CarbonImmutable::parse($rowB['date'].' '.$rowB['start_time'].':00', $tz);
+                $endB = CarbonImmutable::parse($rowB['date'].' '.$rowB['end_time'].':00', $tz);
+
+                if (! $startA->lt($endB) || ! $startB->lt($endA)) {
+                    continue;
+                }
+
+                $regsB = [
+                    (int) $rowB['match1_home_registration_id'],
+                    (int) $rowB['match1_away_registration_id'],
+                    (int) $rowB['match2_home_registration_id'],
+                    (int) $rowB['match2_away_registration_id'],
+                ];
+
+                foreach ($regsA as $ra) {
+                    foreach ($regsB as $rb) {
+                        if ($ra === $rb) {
+                            throw ValidationException::withMessages([
+                                'day2_rows' => __('The same team is scheduled in overlapping time slots (rounds :r1 and :r2).', [
+                                    'r1' => $rowA['round'],
+                                    'r2' => $rowB['round'],
+                                ]),
+                            ]);
+                        }
+                    }
+                }
+            }
+        }
+
+        return $rows;
     }
 
     /**
@@ -2404,7 +3693,7 @@ class TournamentController extends Controller
     }
 
     /**
-     * Apply one status to both Pitch 1 & Pitch 2 games for a fixed Day 1 time-slot row (same round).
+     * Apply one status to both games in a small-tournament round robin time-slot row.
      */
     public function updateSmallDayOneRoundRobinSlotStatus(Request $request, Tournament $tournament): RedirectResponse
     {
@@ -2418,10 +3707,85 @@ class TournamentController extends Controller
             'status' => $this->normalizeSmallDayOneSlotStatusInput($request->string('status')->toString()),
         ]);
 
+        $slotUlid = trim((string) $request->input('schedule_slot_ulid', ''));
+
+        if ($slotUlid !== '' && strlen($slotUlid) === 26) {
+            $validator = Validator::make($request->all(), [
+                'schedule_slot_ulid' => ['required', 'string', 'size:26'],
+                'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+            ]);
+
+            $validator->after(function ($validator) use ($request, $tournament, $slotUlid): void {
+                if ($validator->errors()->isNotEmpty()) {
+                    return;
+                }
+
+                $status = $request->string('status')->toString();
+
+                $matches = TournamentMatch::query()
+                    ->where('tournament_id', $tournament->id)
+                    ->where('stage', 'round_robin')
+                    ->where('schedule_slot_ulid', $slotUlid)
+                    ->orderBy('match_number')
+                    ->orderBy('id')
+                    ->get();
+
+                if ($matches->isEmpty()) {
+                    $validator->errors()->add('status', __('Could not find games for this schedule row.'));
+
+                    return;
+                }
+
+                foreach ($matches as $match) {
+                    if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
+                        $validator->errors()->add(
+                            'status',
+                            __('Clear the scoring timeline on game :num before moving this row back to upcoming.', ['num' => $match->match_number]),
+                        );
+
+                        return;
+                    }
+                }
+            });
+
+            if ($validator->fails()) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors($validator);
+            }
+
+            $validated = $validator->validated();
+            $status = $validated['status'];
+
+            $matches = TournamentMatch::query()
+                ->where('tournament_id', $tournament->id)
+                ->where('stage', 'round_robin')
+                ->where('schedule_slot_ulid', $validated['schedule_slot_ulid'])
+                ->orderBy('match_number')
+                ->orderBy('id')
+                ->get();
+
+            DB::transaction(function () use ($matches, $status): void {
+                foreach ($matches as $match) {
+                    $match->update(['status' => $status]);
+                }
+            });
+
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->with('status', 'match-status-updated');
+        }
+
         $markerPrefix = SmallFixedRoundRobinDayOneSchedule::MARKER_PREFIX;
 
+        if (! $request->filled('first_game_number') && $request->filled('round')) {
+            $request->merge([
+                'first_game_number' => ((int) $request->input('round') * 2) - 1,
+            ]);
+        }
+
         $validator = Validator::make($request->all(), [
-            'round' => ['required', 'integer', 'min:1', 'max:12'],
+            'first_game_number' => ['required', 'integer', 'min:1'],
             'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
         ]);
 
@@ -2430,9 +3794,16 @@ class TournamentController extends Controller
                 return;
             }
 
-            $round = (int) $request->input('round');
+            $low = (int) $request->input('first_game_number');
+
+            if ($low % 2 !== 1) {
+                $validator->errors()->add('first_game_number', __('The first game number in a schedule row must be odd (Pitch 1 game).'));
+
+                return;
+            }
+
             $status = $request->string('status')->toString();
-            $gameNumbers = [($round * 2) - 1, $round * 2];
+            $gameNumbers = [$low, $low + 1];
 
             $matches = TournamentMatch::query()
                 ->where('tournament_id', $tournament->id)
@@ -2468,9 +3839,9 @@ class TournamentController extends Controller
 
         $validated = $validator->validated();
 
-        $round = (int) $validated['round'];
+        $low = (int) $validated['first_game_number'];
         $status = $validated['status'];
-        $gameNumbers = [($round * 2) - 1, $round * 2];
+        $gameNumbers = [$low, $low + 1];
 
         $matches = TournamentMatch::query()
             ->where('tournament_id', $tournament->id)
@@ -2492,7 +3863,7 @@ class TournamentController extends Controller
     }
 
     /**
-     * Apply one status to both Pitch 1 & Pitch 2 games for a fixed Day 2 time-slot row (same round).
+     * Apply one status to both games in a Day 2 small-tournament round robin time-slot row.
      */
     public function updateSmallDayTwoRoundRobinSlotStatus(Request $request, Tournament $tournament): RedirectResponse
     {
@@ -2506,25 +3877,111 @@ class TournamentController extends Controller
             'status' => $this->normalizeSmallDayOneSlotStatusInput($request->string('status')->toString()),
         ]);
 
+        $slotUlid = trim((string) $request->input('schedule_slot_ulid', ''));
+
+        if ($slotUlid !== '' && strlen($slotUlid) === 26) {
+            $validator = Validator::make($request->all(), [
+                'schedule_slot_ulid' => ['required', 'string', 'size:26'],
+                'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
+            ]);
+
+            $validator->after(function ($validator) use ($request, $tournament, $slotUlid): void {
+                if ($validator->errors()->isNotEmpty()) {
+                    return;
+                }
+
+                $status = $request->string('status')->toString();
+
+                $matches = TournamentMatch::query()
+                    ->where('tournament_id', $tournament->id)
+                    ->where('stage', 'round_robin')
+                    ->where('schedule_slot_ulid', $slotUlid)
+                    ->orderBy('match_number')
+                    ->orderBy('id')
+                    ->get();
+
+                if ($matches->isEmpty()) {
+                    $validator->errors()->add('status', __('Could not find games for this schedule row.'));
+
+                    return;
+                }
+
+                foreach ($matches as $match) {
+                    if ($status === 'scheduled' && $match->scoreLogs()->exists()) {
+                        $validator->errors()->add(
+                            'status',
+                            __('Clear the scoring timeline on game :num before moving this row back to upcoming.', ['num' => $match->match_number]),
+                        );
+
+                        return;
+                    }
+                }
+            });
+
+            if ($validator->fails()) {
+                return redirect()
+                    ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                    ->withErrors($validator);
+            }
+
+            $validated = $validator->validated();
+            $status = $validated['status'];
+
+            $matches = TournamentMatch::query()
+                ->where('tournament_id', $tournament->id)
+                ->where('stage', 'round_robin')
+                ->where('schedule_slot_ulid', $validated['schedule_slot_ulid'])
+                ->orderBy('match_number')
+                ->orderBy('id')
+                ->get();
+
+            DB::transaction(function () use ($matches, $status): void {
+                foreach ($matches as $match) {
+                    $match->update(['status' => $status]);
+                }
+            });
+
+            return redirect()
+                ->route('admin.tournaments.index', $this->adminRoundRobinTabQuery($request, $tournament))
+                ->with('status', 'match-status-updated');
+        }
+
         $markerPrefix = SmallFixedRoundRobinDayTwoSchedule::MARKER_PREFIX;
         $firstRound = SmallFixedRoundRobinDayTwoSchedule::FIRST_ROUND_NUMBER;
-        $lastRound = SmallFixedRoundRobinDayTwoSchedule::lastScheduledRoundNumber($tournament);
         $firstGame = SmallFixedRoundRobinDayTwoSchedule::FIRST_GAME_NUMBER;
 
+        if (! $request->filled('first_game_number') && $request->filled('round')) {
+            $request->merge([
+                'first_game_number' => $firstGame + (((int) $request->input('round')) - $firstRound) * 2,
+            ]);
+        }
+
         $validator = Validator::make($request->all(), [
-            'round' => ['required', 'integer', 'min:'.$firstRound, 'max:'.max($firstRound, $lastRound)],
+            'first_game_number' => ['required', 'integer', 'min:'.$firstGame],
             'status' => ['required', Rule::in(['scheduled', 'live', 'completed'])],
         ]);
 
-        $validator->after(function ($validator) use ($request, $tournament, $markerPrefix, $firstRound, $firstGame): void {
+        $validator->after(function ($validator) use ($request, $tournament, $markerPrefix, $firstGame): void {
             if ($validator->errors()->isNotEmpty()) {
                 return;
             }
 
-            $round = (int) $request->input('round');
+            $low = (int) $request->input('first_game_number');
+
+            if ($low % 2 !== 1) {
+                $validator->errors()->add('first_game_number', __('The first game number in a schedule row must be odd (left column game).'));
+
+                return;
+            }
+
+            if ($low < $firstGame) {
+                $validator->errors()->add('first_game_number', __('Day 2 row game numbers must be :min or higher.', ['min' => $firstGame]));
+
+                return;
+            }
+
             $status = $request->string('status')->toString();
-            $slotIndex = $round - $firstRound;
-            $gameNumbers = [$firstGame + ($slotIndex * 2), $firstGame + ($slotIndex * 2) + 1];
+            $gameNumbers = [$low, $low + 1];
 
             $matches = TournamentMatch::query()
                 ->where('tournament_id', $tournament->id)
@@ -2560,10 +4017,9 @@ class TournamentController extends Controller
 
         $validated = $validator->validated();
 
-        $round = (int) $validated['round'];
+        $low = (int) $validated['first_game_number'];
         $status = $validated['status'];
-        $slotIndex = $round - $firstRound;
-        $gameNumbers = [$firstGame + ($slotIndex * 2), $firstGame + ($slotIndex * 2) + 1];
+        $gameNumbers = [$low, $low + 1];
 
         $matches = TournamentMatch::query()
             ->where('tournament_id', $tournament->id)
@@ -2664,6 +4120,111 @@ class TournamentController extends Controller
     }
 
     /**
+     * @return array<string, array<int, mixed>>
+     */
+    protected function tournamentPitchRules(string $prefix = ''): array
+    {
+        $field = fn (string $name): string => $prefix.$name;
+
+        return [
+            $field('number_of_pitches') => ['required', 'integer', 'min:1', 'max:10'],
+            $field('pitch_names') => ['required', 'array', 'min:1', 'max:10'],
+            $field('pitch_names.*') => ['required', 'string', 'max:100'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    protected function validateTournamentPitchNames(array $validated, string $prefix): void
+    {
+        $field = fn (string $name): string => $prefix.$name;
+        $count = (int) ($validated[$field('number_of_pitches')] ?? 0);
+        /** @var list<string> $names */
+        $names = array_values(array_map(
+            fn (mixed $n): string => trim((string) $n),
+            (array) ($validated[$field('pitch_names')] ?? []),
+        ));
+
+        if (count($names) !== $count) {
+            throw ValidationException::withMessages([
+                $field('pitch_names') => __('The number of pitch names must match the number of pitches.'),
+            ]);
+        }
+
+        $lowered = array_map(static fn (string $n): string => mb_strtolower($n), $names);
+
+        if (count(array_unique($lowered)) !== count($lowered)) {
+            throw ValidationException::withMessages([
+                $field('pitch_names') => __('Each pitch name must be unique.'),
+            ]);
+        }
+    }
+
+    /**
+     * Replace tournament pitches with the ordered list from the create/edit form.
+     *
+     * @param  list<string>  $names
+     */
+    protected function syncTournamentPitchesFromAdminInput(Tournament $tournament, int $count, array $names): void
+    {
+        DB::transaction(function () use ($tournament, $count, $names): void {
+            $pitches = Pitch::query()
+                ->where('tournament_id', $tournament->id)
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            for ($i = 0; $i < $count; $i++) {
+                $nm = trim((string) ($names[$i] ?? ''));
+
+                if ($nm === '') {
+                    $nm = 'Pitch '.($i + 1);
+                }
+
+                $pitch = $pitches->get($i);
+
+                if ($pitch instanceof Pitch) {
+                    $pitch->update([
+                        'name' => $nm,
+                        'sort_order' => $i + 1,
+                        'is_active' => true,
+                    ]);
+                } else {
+                    Pitch::query()->create([
+                        'tournament_id' => $tournament->id,
+                        'name' => $nm,
+                        'sort_order' => $i + 1,
+                        'scorekeeper_user_id' => null,
+                        'is_active' => true,
+                    ]);
+                }
+            }
+
+            $refreshed = Pitch::query()
+                ->where('tournament_id', $tournament->id)
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get();
+
+            foreach ($refreshed->slice($count)->values() as $extra) {
+                if (! $extra instanceof Pitch) {
+                    continue;
+                }
+
+                if ($extra->matches()->exists()) {
+                    $extra->update(['is_active' => false]);
+                } else {
+                    $extra->delete();
+                }
+            }
+        });
+
+        $tournament->unsetRelation('pitches');
+    }
+
+    /**
      * Validation rules shared by tournament create and edit forms.
      *
      * @return array<string, array<int, mixed>>
@@ -2690,6 +4251,7 @@ class TournamentController extends Controller
             $field('timezone') => ['nullable', 'string', 'max:120'],
             $field('venue_google_map_link') => ['nullable', 'string', 'max:2048'],
             $field('thumbnail_path') => ['nullable', 'string', 'max:2048'],
+            $field('logo') => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
             $field('event_type') => ['nullable', 'string', 'max:50'],
             $field('division') => ['nullable', 'string', 'max:50'],
             $field('surface') => ['nullable', 'string', 'max:50'],
@@ -2732,7 +4294,9 @@ class TournamentController extends Controller
             'province' => $this->normalizeNullableString($validated[$field('province')] ?? null),
             'city' => $this->normalizeNullableString($validated[$field('city')] ?? null),
             'barangay' => $this->normalizeNullableString($validated[$field('barangay')] ?? null),
-            'timezone' => $this->normalizeNullableString($validated[$field('timezone')] ?? null),
+            'timezone' => SmallFixedRoundRobinDayOneSchedule::normalizeTimezone(
+                (string) ($this->normalizeNullableString($validated[$field('timezone')] ?? null) ?? ''),
+            ),
             'venue_google_map_link' => $this->normalizeNullableString($validated[$field('venue_google_map_link')] ?? null),
             'thumbnail_path' => $this->normalizeNullableString($validated[$field('thumbnail_path')] ?? null),
             'event_type' => $this->normalizeNullableString($validated[$field('event_type')] ?? null),
@@ -2755,6 +4319,27 @@ class TournamentController extends Controller
             ),
             'is_public' => $request->boolean($field('is_public')),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    protected function mergeTournamentLogoUpload(Request $request, array $payload, string $prefix = '', ?Tournament $existing = null): array
+    {
+        $field = $prefix.'logo';
+
+        if (! $request->hasFile($field)) {
+            return $payload;
+        }
+
+        if ($existing?->logo_path) {
+            $existing->deleteStoredLogo();
+        }
+
+        $payload['logo_path'] = $request->file($field)->store('tournament-logos', 'public');
+
+        return $payload;
     }
 
     /**
@@ -3165,35 +4750,17 @@ class TournamentController extends Controller
             ->with('crossover_pitch_assignments_cleared_count', $cleared);
     }
 
-    /**
-     * Build the response after auto-seeding, with JSON support for in-place UI updates.
-     */
-    protected function buildSeedRegistrationsResponse(
-        Request $request,
-        int $tournamentId,
-        string $status,
-    ): RedirectResponse|JsonResponse {
-        if (! $request->expectsJson()) {
-            return redirect()
-                ->route(
-                    $this->resolveTournamentRedirectRoute($request),
-                    $this->resolveTournamentRedirectParameters($request, $tournamentId),
-                )
-                ->with('status', $status);
+    protected function scheduleGenerationBlockedBySeedsMessage(Tournament $tournament): ?string
+    {
+        if (! TournamentRegistration::query()->where('tournament_id', $tournament->id)->exists()) {
+            return null;
         }
 
-        $viewData = $this->buildSeedingOverviewViewData(
-            Tournament::query()->findOrFail($tournamentId),
-        );
+        if (! TournamentRegistration::tournamentHasCompleteUniqueSeeds((int) $tournament->id)) {
+            return __('Please assign seeds to all teams before generating schedules.');
+        }
 
-        $message = $this->resolveSeedRegistrationsStatusMessage($status, $viewData['teamCount']);
-        $viewData['asyncStatusMessage'] = $message;
-
-        return response()->json([
-            'status' => $status,
-            'message' => $message,
-            'overview_html' => view('admin.tournaments.partials.seeding-overview', $viewData)->render(),
-        ]);
+        return null;
     }
 
     /**
@@ -3241,6 +4808,7 @@ class TournamentController extends Controller
             'bracketTeamLimit' => self::BRACKET_TEAM_LIMIT,
             'seedOrderBracketModalCode' => $seedOrderBracketModalCode,
             'asyncStatusMessage' => $asyncStatusMessage,
+            'tournamentSeedsComplete' => TournamentRegistration::tournamentHasCompleteUniqueSeeds((int) $tournament->id),
         ];
     }
 
@@ -3282,17 +4850,6 @@ class TournamentController extends Controller
                 ];
             })
             ->values();
-    }
-
-    protected function resolveSeedRegistrationsStatusMessage(string $status, int $teamCount): string
-    {
-        return match ($status) {
-            'registrations-seeded' => $teamCount >= self::MINIMUM_BRACKET_TEAM_COUNT
-                ? 'Teams seeded successfully. Brackets now use '.self::BRACKET_TEAM_LIMIT.' teams each, and extra teams remain unassigned.'
-                : 'Teams seeded successfully. Brackets start only at '.self::MINIMUM_BRACKET_TEAM_COUNT.' total teams, so all teams remain unassigned for now.',
-            'registrations-seeding-skipped' => 'No registered teams were available for seeding.',
-            default => 'Saved.',
-        };
     }
 
     /**
@@ -3643,6 +5200,7 @@ class TournamentController extends Controller
             search: $search,
         )
             ->with([
+                'pitches' => fn ($query) => $query->orderBy('sort_order')->orderBy('id'),
                 'registrations' => fn ($query) => $query
                     ->select(['id', 'tournament_id', 'team_id', 'status', 'seed_number'])
                     ->with('team:id,name')

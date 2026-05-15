@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Collection;
 
 class TournamentRegistration extends Model
 {
@@ -76,5 +77,42 @@ class TournamentRegistration extends Model
     public function awayMatches(): HasMany
     {
         return $this->hasMany(TournamentMatch::class, 'away_registration_id');
+    }
+
+    /**
+     * True when the tournament has at least one registration and every row has a distinct
+     * {@see $seed_number} covering exactly 1 … N (N = registration count).
+     */
+    public static function tournamentHasCompleteUniqueSeeds(int $tournamentId): bool
+    {
+        /** @var Collection<int, int|null> $seeds */
+        $seeds = self::query()
+            ->where('tournament_id', $tournamentId)
+            ->orderBy('id')
+            ->pluck('seed_number');
+
+        $n = $seeds->count();
+
+        if ($n === 0) {
+            return true;
+        }
+
+        if ($seeds->contains(null)) {
+            return false;
+        }
+
+        if ($seeds->unique()->count() !== $n) {
+            return false;
+        }
+
+        $sorted = $seeds->sort()->values();
+
+        for ($i = 0; $i < $n; $i++) {
+            if ((int) $sorted[$i] !== $i + 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

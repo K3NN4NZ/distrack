@@ -7,15 +7,24 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class Tournament extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::deleting(function (Tournament $tournament): void {
+            $tournament->deleteStoredLogo();
+        });
+    }
+
     /**
      * @var list<string>
      */
-    protected $fillable = ['created_by', 'name', 'slug', 'venue', 'description', 'registration_deadline', 'starts_at', 'ends_at', 'status', 'country_name', 'city', 'province', 'barangay', 'timezone', 'venue_google_map_link', 'thumbnail_path', 'event_type', 'division', 'pooling_rules', 'pooling_mode', 'pooling_manual_slots', 'round_robin_advancing_count', 'surface', 'info_items', 'organizer_items', 'link_items', 'is_public'];
+    protected $fillable = ['created_by', 'name', 'logo_path', 'slug', 'venue', 'description', 'registration_deadline', 'starts_at', 'ends_at', 'status', 'country_name', 'city', 'province', 'barangay', 'timezone', 'venue_google_map_link', 'thumbnail_path', 'event_type', 'division', 'pooling_rules', 'pooling_mode', 'pooling_manual_slots', 'round_robin_advancing_count', 'surface', 'info_items', 'organizer_items', 'link_items', 'is_public'];
 
     /**
      * @return array<string, string>
@@ -64,11 +73,79 @@ class Tournament extends Model
     }
 
     /**
+     * Remove an uploaded tournament logo file from storage (not external URLs).
+     */
+    public function deleteStoredLogo(): void
+    {
+        if (! $this->logo_path || Str::startsWith($this->logo_path, ['http://', 'https://'])) {
+            return;
+        }
+
+        Storage::disk('public')->delete($this->logo_path);
+    }
+
+    /**
+     * Public URL for an uploaded logo, or null if unset.
+     */
+    public function logoUrl(): ?string
+    {
+        if (! $this->logo_path) {
+            return null;
+        }
+
+        if (Str::startsWith($this->logo_path, ['http://', 'https://'])) {
+            return $this->logo_path;
+        }
+
+        return Storage::disk('public')->url($this->logo_path);
+    }
+
+    /**
+     * Short initials for avatar-style placeholders.
+     */
+    public function initials(): string
+    {
+        $words = str($this->name)->explode(' ')->filter();
+
+        if ($words->isEmpty()) {
+            return '?';
+        }
+
+        return $words->take(2)->map(fn (string $word): string => str($word)->substr(0, 1)->toString())->implode('');
+    }
+
+    /**
      * Pitches assigned to the tournament.
      */
     public function pitches(): HasMany
     {
-        return $this->hasMany(Pitch::class)->orderBy('sort_order');
+        return $this->hasMany(Pitch::class)->orderBy('sort_order')->orderBy('id');
+    }
+
+    /**
+     * Legacy tournaments may have no pitch rows; scheduling UIs expect at least two fields.
+     *
+     * @return bool True when default pitches were created.
+     */
+    public function ensureFallbackPitchesIfNone(int $minimum = 2): bool
+    {
+        if ($this->pitches()->exists()) {
+            return false;
+        }
+
+        foreach (range(1, $minimum) as $order) {
+            Pitch::query()->create([
+                'tournament_id' => $this->id,
+                'name' => 'Pitch '.$order,
+                'sort_order' => $order,
+                'scorekeeper_user_id' => null,
+                'is_active' => true,
+            ]);
+        }
+
+        $this->unsetRelation('pitches');
+
+        return true;
     }
 
     /**

@@ -77,7 +77,7 @@
                     <h1 class="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-white">{{ __('Game Score') }}</h1>
                     <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
                         {{ $isSmallDayOneTrackedRow
-                            ? __('Round Robin row status is set on the schedule (one status per time slot for Pitch 1 and Pitch 2). Player scores can be entered after that row is marked Completed.')
+                            ? __('Round Robin row status is set on the schedule (one status per time slot for the two games in that slot). Player scores can be entered after that row is marked Completed.')
                             : __('Match status is controlled from the tournament schedule. Player scores can be entered once the game is marked Completed.') }}
                     </p>
                     <div class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">

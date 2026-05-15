@@ -49,24 +49,27 @@
     <div class="space-y-5">
         <section class="rounded-[1rem] border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
             <div class="flex flex-col gap-4 sm:flex-row sm:items-start">
-                <div class="flex h-[4.6rem] w-[4.6rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.9rem] border border-zinc-200 bg-zinc-100">
-                    @if ($tournament->thumbnail_path)
+                @if ($tournament->logoUrl())
+                    <div class="flex h-28 w-32 shrink-0 items-center justify-center overflow-hidden">
                         <img
-                            src="{{ $tournament->thumbnail_path }}"
-                            alt="{{ $tournament->name }}"
-                            class="h-full w-full object-cover"
+                            src="{{ $tournament->logoUrl() }}"
+                            alt="{{ $tournament->name }} {{ __('logo') }}"
+                            class="max-h-28 max-w-32 object-contain"
                         >
-                    @else
-                        @php
-                            $initials = str($tournament->name)
-                                ->explode(' ')
-                                ->take(2)
-                                ->map(fn ($word) => str($word)->substr(0, 1))
-                                ->implode('');
-                        @endphp
-                        <span class="text-2xl font-semibold text-zinc-400">{{ $initials }}</span>
-                    @endif
-                </div>
+                    </div>
+                @else
+                    <div class="flex h-[4.6rem] w-[4.6rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.9rem] border border-zinc-200 bg-zinc-100">
+                        @if ($tournament->thumbnail_path)
+                            <img
+                                src="{{ $tournament->thumbnail_path }}"
+                                alt="{{ $tournament->name }}"
+                                class="h-full w-full object-cover"
+                            >
+                        @else
+                            <span class="text-2xl font-semibold text-zinc-400">{{ $tournament->initials() }}</span>
+                        @endif
+                    </div>
+                @endif
 
                 <div class="min-w-0 flex-1">
                     <div class="flex flex-col gap-2">

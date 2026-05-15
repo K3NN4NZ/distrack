@@ -72,6 +72,9 @@
     $unassignedSeededCount = $seededRegistrations
         ->filter(fn ($registration): bool => blank($registration->bracket_code))
         ->count();
+    $tournamentSeedsComplete = $selectedTournament !== null
+        ? \App\Models\TournamentRegistration::tournamentHasCompleteUniqueSeeds((int) $selectedTournament->id)
+        : false;
     $roundRobinMatches = collect($selectedTournament?->matches ?? [])
         ->filter(fn ($match): bool => $match->stage === 'round_robin')
         ->values();
@@ -79,6 +82,9 @@
         ->groupBy(fn ($match): string => $match->pitch_id ? (string) $match->pitch_id : 'unassigned')
         ->map(fn ($matches) => $matches->values());
     $unassignedRoundRobinMatches = $roundRobinMatchesByPitch->get('unassigned', collect());
+    $roundRobinScheduleTz = $selectedTournament !== null
+        ? \App\Support\ManualRoundRobinSchedule::tournamentTimezone($selectedTournament)
+        : 'Asia/Manila';
 
     $crossoverMatches = collect($selectedTournament?->matches ?? [])
         ->filter(fn ($match): bool => $match->stage === 'crossover')
@@ -147,18 +153,14 @@
         : null;
     $teamStandingRows = $teamStandingBundle['rows'] ?? collect();
     $teamStandingMeta = $teamStandingBundle['meta'] ?? null;
-    $smallDayOneGridRows = $selectedTournament !== null && ! $hasBracketThreshold
-        ? \App\Support\SmallFixedRoundRobinDayOneSchedule::buildGridRows($selectedTournament)
-        : collect();
-    $smallDayTwoGridRows = $selectedTournament !== null && ! $hasBracketThreshold
-        ? \App\Support\SmallFixedRoundRobinDayTwoSchedule::buildGridRows($selectedTournament)
-        : collect();
-    $smallDayOneOtherRobinMatches = $selectedTournament !== null && ! $hasBracketThreshold
-        ? $roundRobinMatches
-            ->filter(fn ($m) => ! \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($m)
-                && ! \App\Support\SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($m))
-            ->values()
-        : collect();
+    $manualRrDay1Local = null;
+    $manualRrDay2Local = null;
+    $manualOtherRoundRobinMatches = collect();
+    if ($selectedTournament !== null && ! $hasBracketThreshold) {
+        $manualRrDay1Local = \App\Support\ManualRoundRobinSchedule::roundRobinDayOneLocal($selectedTournament);
+        $manualRrDay2Local = \App\Support\ManualRoundRobinSchedule::roundRobinDayTwoLocal($selectedTournament);
+        $manualOtherRoundRobinMatches = \App\Support\ManualRoundRobinSchedule::roundRobinMatchesOutsideConfiguredDays($selectedTournament);
+    }
     $adminTabs = [
         ['key' => 'games-dashboard', 'label' => __('Games Dashboard')],
         ['key' => 'overview', 'label' => __('Seeding')],
@@ -248,6 +250,18 @@
                         @case('registrations-seeding-updated')
                             {{ __('Manual seeding updated successfully.') }}
                             @break
+                        @case('tournament-seeds-saved')
+                            {{ __('Seeds saved.') }}
+                            @break
+                        @case('tournament-seeds-filled')
+                            {{ __('Empty seeds were filled with the next available numbers.') }}
+                            @break
+                        @case('tournament-seeds-fill-empty-none')
+                            {{ __('Every team already has a seed.') }}
+                            @break
+                        @case('tournament-seeds-fill-empty-skipped')
+                            {{ __('There are no teams to seed yet.') }}
+                            @break
                         @case('bracket-ranking-applied')
                             {{ __('Bracket ranks saved from round robin standings.') }}
                             @break
@@ -270,13 +284,52 @@
                             {{ __('Match updated successfully.') }}
                             @break
                         @case('small-day1-schedule-synced')
-                            {{ __('Day 1 round robin schedule was saved (Pitch 1 & Pitch 2, up to 24 games).') }}
+                            {{ __('Day 1 round robin schedule was saved (two games per time slot, up to 24 games).') }}
                             @break
                         @case('match-status-updated')
                             {{ __('Match status updated.') }}
                             @break
                         @case('match-deleted')
                             {{ __('Match deleted successfully.') }}
+                            @break
+                        @case('small-day1-schedule-row-deleted')
+                            {{ __('Schedule row removed (both games).') }}
+                            @break
+                        @case('small-day1-schedule-row-created')
+                            {{ __('Day 1 schedule row added.') }}
+                            @break
+                        @case('small-day1-schedule-row-updated')
+                            {{ __('Day 1 schedule row updated.') }}
+                            @break
+                        @case('small-day1-schedule-row-restored')
+                            {{ __('Day 1 schedule row restored.') }}
+                            @break
+                        @case('small-day2-schedule-synced')
+                            {{ __('Day 2 round robin schedule was saved.') }}
+                            @break
+                        @case('small-day2-schedule-row-deleted')
+                            {{ __('Day 2 schedule row removed (both games).') }}
+                            @break
+                        @case('small-day2-schedule-row-created')
+                            {{ __('Day 2 schedule row added.') }}
+                            @break
+                        @case('small-day2-schedule-row-updated')
+                            {{ __('Day 2 schedule row updated.') }}
+                            @break
+                        @case('small-day2-schedule-row-restored')
+                            {{ __('Day 2 schedule row restored.') }}
+                            @break
+                        @case('round-robin-schedule-row-created')
+                            {{ __('Round robin schedule row added (two games).') }}
+                            @break
+                        @case('round-robin-schedule-row-updated')
+                            {{ __('Round robin schedule row updated.') }}
+                            @break
+                        @case('round-robin-schedule-row-deleted')
+                            {{ __('Schedule row removed (both games).') }}
+                            @break
+                        @case('round-robin-schedule-row-restored')
+                            {{ __('Schedule row restored.') }}
                             @break
                         @case('crossover-pitch-unassigned')
                             {{ __('Crossover game removed from the field and moved back to the unassigned list.') }}
@@ -316,6 +369,11 @@
                 @include('admin.tournaments.partials.form', [
                     'action' => route('admin.tournaments.store'),
                     'submitLabel' => __('Create Tournament'),
+                    'defaults' => [
+                        'number_of_pitches' => 2,
+                        'pitch_names' => [__('Pitch 1'), __('Pitch 2')],
+                        'timezone' => 'Asia/Manila',
+                    ],
                     'hiddenFields' => [
                         'redirect_tab' => 'games-dashboard',
                     ],
@@ -327,7 +385,21 @@
             @if ($isAdmin)
                 <section class="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-zinc-900">
                     <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                        <div>
+                        <div class="flex min-w-0 flex-1 flex-col gap-4 sm:flex-row sm:items-start">
+                            <div class="flex h-28 w-32 shrink-0 items-center justify-center overflow-hidden">
+                                @if ($selectedTournament->logoUrl())
+                                    <img
+                                        src="{{ $selectedTournament->logoUrl() }}"
+                                        alt="{{ $selectedTournament->name }} {{ __('logo') }}"
+                                        class="max-h-28 max-w-32 object-contain"
+                                    >
+                                @else
+                                    <span class="text-base font-semibold text-zinc-500 dark:text-zinc-400">
+                                        {{ $selectedTournament->initials() }}
+                                    </span>
+                                @endif
+                            </div>
+                            <div class="min-w-0 flex-1">
                             <div class="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500 dark:text-zinc-400">
                                 {{ __('Tournament Setup Workspace') }}
                             </div>
@@ -355,6 +427,7 @@
                                 <span class="inline-flex items-center rounded-full border border-neutral-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-700 dark:border-neutral-700 dark:bg-zinc-950 dark:text-zinc-200">
                                     {{ __('Matches: :count', ['count' => $matchCount]) }}
                                 </span>
+                            </div>
                             </div>
                         </div>
 
@@ -431,96 +504,87 @@
                                 'bracketTeamLimit' => $bracketTeamLimit,
                                 'seedOrderBracketModalCode' => $seedOrderBracketModalCode,
                                 'asyncStatusMessage' => null,
+                                'tournamentSeedsComplete' => $tournamentSeedsComplete,
                             ])
                         </div>
-
-                        <script data-navigate-once>
-                            (() => {
-                                if (window.__distrackAsyncSeedingBound) {
-                                    return;
-                                }
-
-                                window.__distrackAsyncSeedingBound = true;
-
-                                document.addEventListener('submit', async (event) => {
-                                    const form = event.target;
-
-                                    if (!(form instanceof HTMLFormElement) || !form.matches('[data-seeding-randomize-form]')) {
-                                        return;
-                                    }
-
-                                    const container = form.closest('[data-seeding-overview-container]')
-                                        ?? document.querySelector('[data-seeding-overview-container]');
-
-                                    if (!(container instanceof HTMLElement)) {
-                                        return;
-                                    }
-
-                                    event.preventDefault();
-
-                                    const submitButtons = Array.from(form.querySelectorAll('button, [type="submit"]'))
-                                        .filter((element) => element instanceof HTMLButtonElement || element instanceof HTMLInputElement);
-
-                                    submitButtons.forEach((button) => {
-                                        button.dataset.originalDisabled = button.disabled ? 'true' : 'false';
-                                        button.disabled = true;
-                                    });
-
-                                    try {
-                                        const response = await fetch(form.action, {
-                                            method: form.method || 'POST',
-                                            headers: {
-                                                'Accept': 'application/json',
-                                                'X-Requested-With': 'XMLHttpRequest',
-                                            },
-                                            body: new FormData(form),
-                                        });
-
-                                        if (!response.ok) {
-                                            throw new Error(`Randomize request failed with status ${response.status}.`);
-                                        }
-
-                                        const payload = await response.json();
-
-                                        if (typeof payload.overview_html !== 'string') {
-                                            throw new Error('Missing seeding overview HTML in response.');
-                                        }
-
-                                        container.innerHTML = payload.overview_html;
-                                    } catch (error) {
-                                        console.error(error);
-
-                                        submitButtons.forEach((button) => {
-                                            button.disabled = button.dataset.originalDisabled === 'true';
-                                        });
-
-                                        form.submit();
-                                    }
-                                });
-                            })();
-                        </script>
                     </section>
                 @elseif ($selectedTab === 'round-robin')
                     <section class="space-y-6">
                         @if (! $hasBracketThreshold)
-                            @include('admin.tournaments.partials.small-round-robin-day1-fixed-schedule', [
+                            @php
+                                $activePitches = $selectedTournament->pitches->where('is_active', true)->sortBy(['sort_order', 'id'])->values();
+                                $roundRobinPitchOptions = $activePitches->isNotEmpty()
+                                    ? $activePitches
+                                    : $selectedTournament->pitches->sortBy(['sort_order', 'id'])->values();
+                                $roundRobinRegistrationOptions = \App\Support\ManualRoundRobinSchedule::sortedRegistrations($selectedTournament);
+                                $manualSlotsDay1 = \App\Support\ManualRoundRobinSchedule::activeSlotsForDay($selectedTournament, $manualRrDay1Local);
+                                $manualSlotsDay2 = \App\Support\ManualRoundRobinSchedule::activeSlotsForDay($selectedTournament, $manualRrDay2Local);
+                                $manualRemovedDay1 = \App\Support\ManualRoundRobinSchedule::removedSlotsForDay($selectedTournament, $manualRrDay1Local);
+                                $manualRemovedDay2 = \App\Support\ManualRoundRobinSchedule::removedSlotsForDay($selectedTournament, $manualRrDay2Local);
+                                $addDefaultsDay1 = \App\Support\ManualRoundRobinSchedule::defaultAddSlotForm($selectedTournament);
+                                if ($manualSlotsDay1->isNotEmpty()) {
+                                    $addDefaultsDay1['round'] = (int) $manualSlotsDay1->max(fn ($r) => (int) ($r['round'] ?? 0)) + 1;
+                                }
+                                $addDefaultsDay2 = \App\Support\ManualRoundRobinSchedule::defaultAddSlotForm($selectedTournament);
+                                if ($manualSlotsDay2->isNotEmpty()) {
+                                    $addDefaultsDay2['round'] = (int) $manualSlotsDay2->max(fn ($r) => (int) ($r['round'] ?? 0)) + 1;
+                                }
+                            @endphp
+
+                            @include('admin.tournaments.partials.manual-small-round-robin-day', [
                                 'selectedTournament' => $selectedTournament,
-                                'smallDayOneGridRows' => $smallDayOneGridRows,
-                                'smallDayOneOtherRobinMatches' => $smallDayOneOtherRobinMatches,
+                                'dayNum' => 1,
+                                'dayTitle' => __('DAY 1'),
+                                'dayDateLabel' => \App\Support\ManualRoundRobinSchedule::dayDateLabel($manualRrDay1Local),
+                                'dayDateIso' => \App\Support\ManualRoundRobinSchedule::dayDateIso($manualRrDay1Local),
+                                'slotRows' => $manualSlotsDay1,
+                                'removedRows' => $manualRemovedDay1,
+                                'roundRobinPitchOptions' => $roundRobinPitchOptions,
+                                'roundRobinRegistrationOptions' => $roundRobinRegistrationOptions,
                                 'teamCount' => $teamCount,
                                 'pitchCount' => $pitchCount,
                                 'isAdmin' => $isAdmin,
                                 'canEnterScores' => $canEnterScores,
+                                'tournamentTimezone' => $roundRobinScheduleTz,
+                                'addDefaults' => $addDefaultsDay1,
                             ])
 
-                            @include('admin.tournaments.partials.small-round-robin-day2-fixed-schedule', [
+                            @include('admin.tournaments.partials.manual-small-round-robin-day', [
                                 'selectedTournament' => $selectedTournament,
-                                'smallDayTwoGridRows' => $smallDayTwoGridRows,
+                                'dayNum' => 2,
+                                'dayTitle' => __('DAY 2'),
+                                'dayDateLabel' => \App\Support\ManualRoundRobinSchedule::dayDateLabel($manualRrDay2Local),
+                                'dayDateIso' => \App\Support\ManualRoundRobinSchedule::dayDateIso($manualRrDay2Local),
+                                'slotRows' => $manualSlotsDay2,
+                                'removedRows' => $manualRemovedDay2,
+                                'roundRobinPitchOptions' => $roundRobinPitchOptions,
+                                'roundRobinRegistrationOptions' => $roundRobinRegistrationOptions,
                                 'teamCount' => $teamCount,
                                 'pitchCount' => $pitchCount,
                                 'isAdmin' => $isAdmin,
                                 'canEnterScores' => $canEnterScores,
+                                'tournamentTimezone' => $roundRobinScheduleTz,
+                                'addDefaults' => $addDefaultsDay2,
                             ])
+
+                            @if ($manualOtherRoundRobinMatches->isNotEmpty())
+                                <section class="rounded-xl border border-amber-200 bg-amber-50/80 p-6 dark:border-amber-900/50 dark:bg-amber-950/30">
+                                    <h3 class="text-sm font-semibold text-amber-950 dark:text-amber-100">{{ __('Other round robin dates') }}</h3>
+                                    <p class="mt-1 text-xs text-amber-900/90 dark:text-amber-200/90">
+                                        {{ __('These games are scheduled on calendar days outside the Day 1 / Day 2 headers above. Edit them from the match list or move them into a day by adjusting their start times.') }}
+                                    </p>
+                                    <ul class="mt-3 list-inside list-disc text-sm text-amber-950 dark:text-amber-100">
+                                        @foreach ($manualOtherRoundRobinMatches as $om)
+                                            <li>
+                                                {{ __('Game :num — :when', [
+                                                    'num' => $om->match_number,
+                                                    'when' => $om->scheduled_at?->timezone($roundRobinScheduleTz)->format('M j, Y g:i A') ?? '—',
+                                                ]) }}
+                                            </li>
+                                        @endforeach
+                                    </ul>
+                                </section>
+                            @endif
                         @endif
 
                         @if ($hasBracketThreshold)
@@ -951,7 +1015,8 @@
                                                 <input type="hidden" name="away_registration_id" value="{{ $match->away_registration_id }}">
                                                 <input type="hidden" name="round_label" value="{{ $match->round_label }}">
                                                 <input type="hidden" name="match_number" value="{{ $match->match_number }}">
-                                                <input type="hidden" name="scheduled_at" value="{{ $match->scheduled_at?->format('Y-m-d\TH:i') }}">
+                                                <input type="hidden" name="start_time" value="{{ $match->scheduled_at?->timezone($roundRobinScheduleTz)->format('H:i') ?? '09:00' }}">
+                                                <input type="hidden" name="end_time" value="{{ $match->scheduled_ends_at?->timezone($roundRobinScheduleTz)->format('H:i') ?? ($match->scheduled_at ? $match->scheduled_at->timezone($roundRobinScheduleTz)->addMinutes(55)->format('H:i') : '10:00') }}">
 
                                                 <div class="min-w-0">
                                                     <div class="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
@@ -1197,6 +1262,11 @@
                     @include('admin.tournaments.partials.setup-edit-round-robin-match-modal', [
                         'tournament' => $selectedTournament,
                         'match' => $match,
+                        'roundRobinMatchModalEditScope' => (! $hasBracketThreshold && $match->stage === 'round_robin')
+                            || \App\Support\SmallFixedRoundRobinDayOneSchedule::isTrackedMatch($match)
+                            || \App\Support\SmallFixedRoundRobinDayTwoSchedule::isTrackedMatch($match)
+                            ? 'game'
+                            : 'slot',
                     ])
                 @endforeach
             @else

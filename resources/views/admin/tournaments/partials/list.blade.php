@@ -34,6 +34,8 @@
     };
 
     $buildTournamentDefaults = function ($tournament) use ($normalizeStoredRows): array {
+        $tournament->loadMissing(['pitches' => fn ($q) => $q->orderBy('sort_order')->orderBy('id')]);
+
         return [
             'name' => $tournament->name,
             'venue' => $tournament->venue,
@@ -49,7 +51,9 @@
             'city' => $tournament->city,
             'barangay_code' => '',
             'barangay' => $tournament->barangay,
-            'timezone' => $tournament->timezone,
+            'timezone' => \App\Support\ManualRoundRobinSchedule::normalizeTimezone(
+                (string) ($tournament->timezone ?? ''),
+            ),
             'venue_google_map_link' => $tournament->venue_google_map_link,
             'thumbnail_path' => $tournament->thumbnail_path,
             'event_type' => $tournament->event_type,
@@ -60,6 +64,12 @@
             'organizer_items' => $normalizeStoredRows($tournament->organizer_items ?? []),
             'link_items' => $normalizeStoredRows($tournament->link_items ?? [], 'href'),
             'is_public' => (bool) $tournament->is_public,
+            'number_of_pitches' => $tournament->pitches->isEmpty()
+                ? 2
+                : $tournament->pitches->count(),
+            'pitch_names' => $tournament->pitches->isNotEmpty()
+                ? $tournament->pitches->map(fn ($p): string => (string) $p->name)->values()->all()
+                : [__('Pitch 1'), __('Pitch 2')],
         ];
     };
 
@@ -195,6 +205,21 @@
                 @else
                     <div class="{{ $showCompactActions ? 'block pr-36' : 'block' }}">
                 @endif
+                    <div class="flex gap-3">
+                        <div class="mt-0.5 flex h-24 w-28 shrink-0 items-center justify-center overflow-hidden">
+                            @if ($tournament->logoUrl())
+                                <img
+                                    src="{{ $tournament->logoUrl() }}"
+                                    alt="{{ $tournament->name }} {{ __('logo') }}"
+                                    class="max-h-24 max-w-28 object-contain"
+                                >
+                            @else
+                                <span class="text-sm font-semibold text-zinc-500 dark:text-zinc-400">
+                                    {{ $tournament->initials() }}
+                                </span>
+                            @endif
+                        </div>
+                        <div class="min-w-0 flex-1">
                     <div class="text-base font-semibold text-zinc-900 dark:text-white">{{ $tournament->name }}</div>
                     <div class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ $tournament->venue }}</div>
                     <div class="mt-2 flex flex-wrap gap-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -208,6 +233,8 @@
                             <span>{{ $tournament->surface }}</span>
                         @endif
                         <span>{{ $tournament->is_public ? __('Public') : __('Private') }}</span>
+                    </div>
+                        </div>
                     </div>
                 @if ($selectionRoute)
                     </a>
@@ -282,6 +309,7 @@
                         'submitLabel' => __('Save Tournament Changes'),
                         'fieldPrefix' => 'edit_',
                         'defaults' => $buildTournamentDefaults($tournament),
+                        'existingLogoUrl' => $tournament->logoUrl(),
                         'hiddenFields' => [
                             'edit_tournament_id' => $tournament->id,
                             'redirect_route' => $listRoute,
