@@ -17,22 +17,7 @@
     $sheetTeam = $team;
     $sheetStatsByMember = $playerStats->keyBy('team_member_id');
     $sheetMembers = $sheetTeam?->members ?? collect();
-    $sheetMaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'male')->values();
-    $sheetFemaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'female')->values();
-    $sheetOtherMembers = $sheetMembers
-        ->filter(fn ($member) => ! in_array(strtolower((string) $member->gender), ['male', 'female'], true))
-        ->values();
-    $sheetGenderGroups = collect([
-        ['label' => __('MALE'), 'roster' => $sheetMaleMembers],
-        ['label' => __('FEMALE'), 'roster' => $sheetFemaleMembers],
-    ])->filter(fn (array $g): bool => $g['roster']->isNotEmpty());
-
-    if ($sheetOtherMembers->isNotEmpty()) {
-        $sheetGenderGroups->push([
-            'label' => __('OTHER'),
-            'roster' => $sheetOtherMembers,
-        ]);
-    }
+    $sheetGenderGroups = \App\Support\MatchScoreSheetRosterGroups::fromMembers($sheetMembers);
     $teamName = $sheetTeam?->name ?: ($side === 'home' ? __('Home Team') : __('Away Team'));
 
     $showPerSheetHeader = isset($tournament, $match, $homeTeam, $awayTeam);

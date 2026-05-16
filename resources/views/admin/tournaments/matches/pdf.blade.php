@@ -97,8 +97,7 @@
             width: 100%;
             border-collapse: collapse;
             table-layout: fixed;
-            page-break-inside: avoid;
-            break-inside: avoid;
+            /* Allow row tables to span pages — avoids DomPDF clipping when rosters grow after the match is created */
         }
         .score-table th,
         .score-table td {

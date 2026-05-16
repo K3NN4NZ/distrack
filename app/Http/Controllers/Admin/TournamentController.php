@@ -333,6 +333,7 @@ class TournamentController extends Controller
         $this->ensureTournamentOwnsMatch($tournament, $match);
 
         $match = $this->loadMatchScoringContext($match);
+        $this->refreshMatchParticipantRegistrationRosters($match);
 
         return view('admin.tournaments.scoring', [
             'tournament' => $tournament,
@@ -798,6 +799,7 @@ class TournamentController extends Controller
         $this->ensureTournamentOwnsMatch($tournament, $match);
 
         $match = $this->loadMatchScoringContext($match);
+        $this->refreshMatchParticipantRegistrationRosters($match);
 
         $homeTeam = $match->homeRegistration?->team;
         $awayTeam = $match->awayRegistration?->team;
@@ -898,6 +900,7 @@ class TournamentController extends Controller
         $this->ensureTournamentOwnsMatch($tournament, $match);
 
         $match = $this->loadMatchScoringContext($match);
+        $this->refreshMatchParticipantRegistrationRosters($match);
 
         if ($match->spiritScores->filter(fn (MatchSpiritScore $row): bool => $this->matchSpiritScoreRowHasData($row))->isEmpty()) {
             abort(404, __('No spirit scores available yet.'));
@@ -5263,6 +5266,53 @@ class TournamentController extends Controller
     }
 
     /**
+     * Re-read match participant registrations from the database with full rosters.
+     *
+     * Guarantees scoring UIs and PDF exports use current {@see TournamentRegistration::$team_id} ties and
+     * up-to-date {@see Team::$members}, avoiding stale eager-loaded relation caches on long-lived models.
+     */
+    protected function refreshMatchParticipantRegistrationRosters(TournamentMatch $match): void
+    {
+        $ids = array_values(array_unique(array_filter([
+            $match->home_registration_id,
+            $match->away_registration_id,
+        ], fn ($id): bool => $id !== null)));
+
+        if ($ids === []) {
+            return;
+        }
+
+        /** @var Collection<int, TournamentRegistration> $registrations */
+        $registrations = TournamentRegistration::query()
+            ->whereKey($ids)
+            ->with([
+                'team' => fn ($query) => $query->with([
+                    'members' => fn ($membersQuery) => $membersQuery
+                        ->orderByRaw("case when role = 'captain' then 0 when role = 'spirit_captain' then 1 else 2 end")
+                        ->orderBy('name'),
+                ]),
+            ])
+            ->get()
+            ->keyBy('id');
+
+        if ($match->home_registration_id !== null) {
+            $match->setRelation(
+                'homeRegistration',
+                $registrations->get((int) $match->home_registration_id),
+            );
+        }
+
+        if ($match->away_registration_id !== null) {
+            $match->setRelation(
+                'awayRegistration',
+                $registrations->get((int) $match->away_registration_id),
+            );
+        }
+    }
+
+    /**
+     * Upsert persisted spirit criterion rows for a single scored-team / scoring-team pairing.
+     *
      * @param  array<string, mixed>  $input
      */
     protected function upsertMatchSpiritScoreRecord(

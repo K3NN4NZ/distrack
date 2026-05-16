@@ -4822,6 +4822,17 @@ test('scorekeepers can download a match scoring PDF', function () {
         'role' => 'member',
     ]);
 
+    TeamMember::query()->create([
+        'team_id' => $awayTeam->id,
+        'user_id' => null,
+        'name' => 'Away Roster Addition',
+        'nickname' => null,
+        'gender' => 'male',
+        'age' => 24,
+        'address' => null,
+        'role' => 'member',
+    ]);
+
     $homeRegistration = TournamentRegistration::query()->create([
         'tournament_id' => $tournament->id,
         'team_id' => $homeTeam->id,
@@ -4857,6 +4868,28 @@ test('scorekeepers can download a match scoring PDF', function () {
     $match->update(['pitch_id' => $pitch->id]);
 
     $homeTeam->load('members');
+    $awayTeamFresh = Team::query()->with([
+        'members' => fn ($q) => $q
+            ->orderByRaw("case when role = 'captain' then 0 when role = 'spirit_captain' then 1 else 2 end")
+            ->orderBy('name'),
+    ])->findOrFail($awayTeam->id);
+
+    $awayPdfPartial = view('admin.tournaments.matches.partials.pdf-score-table', [
+        'tournament' => $tournament,
+        'match' => $match,
+        'homeTeam' => $homeTeam,
+        'awayTeam' => $awayTeamFresh,
+        'matchStatusLabel' => __('Completed'),
+        'winnerLabel' => $homeTeam->name,
+        'team' => $awayTeamFresh,
+        'playerStats' => collect(),
+        'totalScore' => 7,
+        'side' => 'away',
+        'isCompleted' => true,
+    ])->render();
+
+    expect($awayPdfPartial)->toContain('Away Roster Addition');
+
     $pdfScoreTableHtml = view('admin.tournaments.matches.partials.pdf-score-table', [
         'tournament' => $tournament,
         'match' => $match,
@@ -4877,7 +4910,7 @@ test('scorekeepers can download a match scoring PDF', function () {
         ->and($pdfScoreTableHtml)->toContain('images/report_generation_header_logo.png')
         ->and($pdfScoreTableHtml)->toContain('class="sheet-title-line"')
         ->and($pdfScoreTableHtml)->toContain($tournament->name)
-        ->and($pdfScoreTableHtml)->toContain('width: 7%;')
+        ->and($pdfScoreTableHtml)->toContain('width: 6%;')
         ->and($pdfScoreTableHtml)->toContain('gender-row')
         ->and($pdfScoreTableHtml)->toContain('<div class="total-number">10</div>');
 

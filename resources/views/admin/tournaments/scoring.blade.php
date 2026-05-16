@@ -365,22 +365,7 @@
                         $sheetTeam = $sheet['team'];
                         $sheetStatsByMember = $sheet['stats']->keyBy('team_member_id');
                         $sheetMembers = $sheetTeam?->members ?? collect();
-                        $sheetMaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'male')->values();
-                        $sheetFemaleMembers = $sheetMembers->filter(fn ($member) => strtolower((string) $member->gender) === 'female')->values();
-                        $sheetOtherMembers = $sheetMembers
-                            ->filter(fn ($member) => ! in_array(strtolower((string) $member->gender), ['male', 'female'], true))
-                            ->values();
-                        $sheetGenderGroups = collect([
-                            ['label' => __('MALE'), 'roster' => $sheetMaleMembers],
-                            ['label' => __('FEMALE'), 'roster' => $sheetFemaleMembers],
-                        ]);
-
-                        if ($sheetOtherMembers->isNotEmpty()) {
-                            $sheetGenderGroups->push([
-                                'label' => __('OTHER'),
-                                'roster' => $sheetOtherMembers,
-                            ]);
-                        }
+                        $sheetGenderGroups = \App\Support\MatchScoreSheetRosterGroups::fromMembers($sheetMembers);
                     @endphp
 
                     <section class="overflow-hidden rounded-xl border border-neutral-300 bg-white text-zinc-900 shadow-sm dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-100">
