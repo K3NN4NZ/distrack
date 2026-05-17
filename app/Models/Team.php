@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\NormalizesUtf8Attributes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,11 +13,17 @@ use Illuminate\Support\Str;
 class Team extends Model
 {
     use HasFactory;
+    use NormalizesUtf8Attributes;
 
     /**
      * @var list<string>
      */
     protected $fillable = ['owner_user_id', 'name', 'short_name', 'description', 'address', 'city', 'province', 'country_name', 'logo_path', 'status'];
+
+    /**
+     * @var list<string>
+     */
+    protected array $utf8Attributes = ['name', 'short_name', 'description', 'address', 'city', 'province', 'country_name'];
 
     /**
      * Team owner.

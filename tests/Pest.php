@@ -23,6 +23,22 @@ pest()->extend(TestCase::class)
     ->in('Unit/TournamentReportBuilderTest.php');
 
 pest()->extend(TestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Unit/MatchMvpTest.php');
+
+pest()->extend(TestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Unit/MatchSpiritScoresTest.php');
+
+pest()->extend(TestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Unit/TournamentRoundRobinMvpTest.php');
+
+pest()->extend(TestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Unit/TournamentSpiritLeaderboardTest.php');
+
+pest()->extend(TestCase::class)
     ->in('Unit/ManualRoundRobinScheduleTest.php');
 
 pest()->extend(TestCase::class)

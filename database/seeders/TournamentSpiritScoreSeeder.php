@@ -23,7 +23,7 @@ use Illuminate\Database\Seeder;
  */
 final class TournamentSpiritScoreSeeder extends Seeder
 {
-    private const TOURNAMENT_ID = 9;
+    private const TOURNAMENT_ID = 5;
 
     private const NOTES = 'Seeded demo spirit score';
 

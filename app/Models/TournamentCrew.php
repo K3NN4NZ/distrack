@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\NormalizesUtf8Attributes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -11,11 +12,17 @@ use Illuminate\Support\Str;
 class TournamentCrew extends Model
 {
     use HasFactory;
+    use NormalizesUtf8Attributes;
 
     /**
      * @var list<string>
      */
     protected $fillable = ['tournament_id', 'category', 'title', 'name', 'photo_path', 'sort_order'];
+
+    /**
+     * @var list<string>
+     */
+    protected array $utf8Attributes = ['category', 'title', 'name'];
 
     /**
      * @return array<string, string>

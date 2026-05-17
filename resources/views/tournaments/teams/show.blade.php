@@ -112,7 +112,7 @@
                 <div>
                     <h2 class="text-[2rem] font-medium tracking-tight text-zinc-950">Overall Stats Summary</h2>
 
-                    <div class="mt-6 grid gap-6 sm:grid-cols-3">
+                    <div class="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
                         @foreach ($statCharts as $chart)
                             @php
                                 $chartSegments = $chart['segments']->values();
@@ -124,8 +124,8 @@
                                     segments: @js($chartSegments->all()),
                                     metricLabel: @js(str($chart['label'])->lower()->toString()),
                                     activeSegment: null,
-                                    tooltipX: 56,
-                                    tooltipY: 20,
+                                    tooltipX: 88,
+                                    tooltipY: 32,
                                     activate(index, event) {
                                         this.activeSegment = this.segments[index];
                                         this.move(event);
@@ -146,13 +146,13 @@
                                         this.activeSegment = null;
                                     },
                                 }"
-                                class="flex flex-col items-center text-center"
+                                class="flex h-full flex-col items-center rounded-[1rem] border border-zinc-200 bg-white px-6 py-8 text-center shadow-sm"
                                 data-stat-donut
                                 data-chart-metric="{{ $chart['metric'] }}"
                             >
-                                <div class="text-[2rem] font-semibold leading-none text-zinc-950">{{ $chart['label'] }}</div>
+                                <h3 class="text-xl font-semibold tracking-tight text-zinc-950 sm:text-2xl">{{ $chart['label'] }}</h3>
 
-                                <div x-ref="surface" class="relative mt-4 h-[7.5rem] w-[7.5rem]">
+                                <div x-ref="surface" class="relative mx-auto mt-6 h-40 w-40 shrink-0 sm:h-44 sm:w-44">
                                     <div
                                         x-show="activeSegment"
                                         style="display: none;"
@@ -207,12 +207,13 @@
                                         @endforeach
                                     </svg>
 
-                                    <div class="pointer-events-none absolute inset-[1.95rem] rounded-full bg-white shadow-[inset_0_0_0_1px_rgba(226,232,240,0.9)]"></div>
+                                    <div class="pointer-events-none absolute inset-[26%] rounded-full bg-white shadow-[inset_0_0_0_1px_rgba(226,232,240,0.9)]"></div>
                                 </div>
 
-                                <div class="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
-                                    Total {{ $chart['total'] }}
-                                </div>
+                                <p class="mt-6 text-center">
+                                    <span class="text-sm font-semibold uppercase tracking-[0.12em] text-zinc-400">Total</span>
+                                    <span class="mt-1 block text-2xl font-bold tabular-nums text-zinc-950 sm:text-[1.75rem]">{{ $chart['total'] }}</span>
+                                </p>
                             </div>
                         @endforeach
                     </div>

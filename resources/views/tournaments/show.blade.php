@@ -802,10 +802,13 @@
         @elseif ($activeTab === 'stats')
             @php
                 $defaultStatsGender = data_get($statsOptions['gender']->first(), 'value', 'all');
+                $statsActiveMetric = $statsActiveMetric ?? ($statsFilters['metric'] ?? 'goals');
+                $statsMetricColumnLabel = $statsMetricLabels[$statsActiveMetric] ?? 'Goals';
                 $currentStatsPage = $statsLeaderboard->currentPage();
-                $statsUrl = function (array $overrides = []) use ($tournament, $statsFilters, $defaultStatsGender, $currentStatsPage) {
+                $statsUrl = function (array $overrides = []) use ($tournament, $statsFilters, $defaultStatsGender, $currentStatsPage, $baseQuery) {
                     return route('tournaments.show', array_merge(
                         ['tournament' => $tournament, 'tab' => 'stats'],
+                        $baseQuery,
                         collect([
                             'gender' => $statsFilters['gender'] !== $defaultStatsGender ? $statsFilters['gender'] : null,
                             'metric' => $statsFilters['metric'] !== 'goals' ? $statsFilters['metric'] : null,
@@ -876,6 +879,9 @@
                 <div class="mt-3 flex justify-end">
                     <form method="GET" action="{{ route('tournaments.show', $tournament) }}" class="w-full sm:w-auto" data-livewire-navigate-form>
                         <input type="hidden" name="tab" value="stats">
+                        @foreach ($baseQuery as $queryKey => $queryValue)
+                            <input type="hidden" name="{{ $queryKey }}" value="{{ $queryValue }}">
+                        @endforeach
                         <input type="hidden" name="gender" value="{{ $statsFilters['gender'] }}">
                         <input type="hidden" name="metric" value="{{ $statsFilters['metric'] }}">
                         <input
@@ -890,14 +896,12 @@
 
                 <div class="mt-5 overflow-hidden rounded-[1rem] border border-zinc-200 bg-white">
                     <div class="overflow-x-auto">
-                        <div class="min-w-[52rem]">
-                            <div class="grid grid-cols-[5rem_minmax(0,1.35fr)_4rem_4rem_4.25rem_4.5rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-900">
+                        <div class="min-w-[36rem]">
+                            <div class="grid grid-cols-[5rem_minmax(0,1.2fr)_minmax(0,1fr)_5.5rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-900">
                                 <div>Rank</div>
-                                <div>Name</div>
-                                <div class="text-center">Goals</div>
-                                <div class="text-center">Asst.</div>
-                                <div class="text-center">Blocks</div>
-                                <div class="text-center">Total O</div>
+                                <div>Player</div>
+                                <div>Team</div>
+                                <div class="text-center">{{ $statsMetricColumnLabel }}</div>
                             </div>
 
                             @forelse ($statsLeaderboard as $player)
@@ -908,9 +912,10 @@
                                         3 => 'bg-[#d78a33] text-[#663300]',
                                         default => '',
                                     };
+                                    $metricValue = $player[$statsActiveMetric] ?? 0;
                                 @endphp
 
-                                <div class="grid grid-cols-[5rem_minmax(0,1.35fr)_4rem_4rem_4.25rem_4.5rem] items-center gap-3 border-b border-zinc-200 px-5 py-4 last:border-b-0">
+                                <div class="grid grid-cols-[5rem_minmax(0,1.2fr)_minmax(0,1fr)_5.5rem] items-center gap-3 border-b border-zinc-200 px-5 py-4 last:border-b-0">
                                     <div class="text-center text-2xl font-medium text-zinc-900">
                                         @if ($player['rank'] <= 3)
                                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full text-xl font-medium {{ $rankBadgeClasses }}">
@@ -921,19 +926,15 @@
                                         @endif
                                     </div>
 
-                                    <div class="min-w-0">
-                                        <div class="truncate text-[1.05rem] font-medium text-zinc-950">
-                                            {{ $player['display_name'] }}
-                                        </div>
-                                        <div class="mt-1 truncate text-sm text-zinc-400">
-                                            {{ $player['team']->name }}
-                                        </div>
+                                    <div class="min-w-0 truncate text-[1.05rem] font-medium text-zinc-950">
+                                        {{ $player['display_name'] }}
                                     </div>
 
-                                    <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['goals'] }}</div>
-                                    <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['assists'] }}</div>
-                                    <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['blocks'] }}</div>
-                                    <div class="text-center text-2xl font-medium text-zinc-900">{{ $player['total_offense'] }}</div>
+                                    <div class="min-w-0 truncate text-sm text-zinc-500">
+                                        {{ $player['team']->name }}
+                                    </div>
+
+                                    <div class="text-center text-2xl font-medium text-[#2f55b7]">{{ $metricValue }}</div>
                                 </div>
                             @empty
                                 <div class="px-5 py-12 text-center text-sm leading-6 text-zinc-600">
@@ -1003,7 +1004,7 @@
                         ['tournament' => $tournament, 'tab' => 'spirit'],
                         $baseQuery,
                         collect([
-                            'spirit_sort' => $column !== 'overall_spirit_score' ? $column : null,
+                            'spirit_sort' => $column !== 'average_spirit_score' ? $column : null,
                             'spirit_direction' => $direction !== $defaultDirection ? $direction : null,
                         ])->filter(fn ($value) => ! is_null($value) && $value !== '')
                             ->all(),
@@ -1026,22 +1027,21 @@
 
                 @if ($spiritDirectory->isNotEmpty())
                     <div class="mt-4 text-[1.05rem] text-zinc-900">Average Spirit Score of Each Team</div>
+                    <p class="mt-2 text-sm text-zinc-500">
+                        Average Spirit Score = Total Spirit Score ÷ Total Games Played
+                    </p>
 
                     <div class="mt-3 overflow-hidden rounded-[1rem] border border-zinc-200 bg-white">
                         <div class="overflow-x-auto">
-                            <div class="min-w-[67rem]">
-                                <div class="grid grid-cols-[5rem_minmax(0,1.7fr)_6.5rem_5.5rem_5.5rem_5.5rem_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-semibold text-zinc-900">
+                            <div class="min-w-[52rem]">
+                                <div class="grid grid-cols-[5rem_minmax(0,1.7fr)_8rem_8rem_8rem] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-semibold text-zinc-900">
                                     <div>Rank</div>
 
                                     @foreach ([
                                         ['key' => 'team', 'label' => 'Team', 'align' => 'justify-start'],
-                                        ['key' => 'games_rated', 'label' => 'Games Rated', 'align' => 'justify-center'],
-                                        ['key' => 'overall_spirit_score', 'label' => 'Avg', 'align' => 'justify-center'],
-                                        ['key' => 'avg_rules', 'label' => 'Rules', 'align' => 'justify-center'],
-                                        ['key' => 'avg_fouls', 'label' => 'Fouls', 'align' => 'justify-center'],
-                                        ['key' => 'avg_fair', 'label' => 'Fair', 'align' => 'justify-center'],
-                                        ['key' => 'avg_attitude', 'label' => 'Attit.', 'align' => 'justify-center'],
-                                        ['key' => 'avg_communication', 'label' => 'Comm.', 'align' => 'justify-center'],
+                                        ['key' => 'total_spirit_score', 'label' => 'Total Spirit Score', 'align' => 'justify-center'],
+                                        ['key' => 'total_games_played', 'label' => 'Total Games Played', 'align' => 'justify-center'],
+                                        ['key' => 'average_spirit_score', 'label' => 'Average Spirit Score', 'align' => 'justify-center'],
                                     ] as $header)
                                         @php
                                             $isActiveSort = $spiritSort['column'] === $header['key'];
@@ -1074,7 +1074,8 @@
                                             ->take(2)
                                             ->map(fn ($word) => str($word)->substr(0, 1))
                                             ->implode('');
-                                        $rankBadgeClasses = match ($loop->iteration) {
+                                        $rank = $entry['rank'];
+                                        $rankBadgeClasses = match ($rank) {
                                             1 => 'bg-[#ffd34d] text-[#7a4a00]',
                                             2 => 'bg-zinc-300 text-zinc-700',
                                             3 => 'bg-[#d78a33] text-[#663300]',
@@ -1082,14 +1083,14 @@
                                         };
                                     @endphp
 
-                                    <div class="grid grid-cols-[5rem_minmax(0,1.7fr)_6.5rem_5.5rem_5.5rem_5.5rem_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-zinc-200 px-4 py-5 text-[1.05rem] text-zinc-900 last:border-b-0">
+                                    <div class="grid grid-cols-[5rem_minmax(0,1.7fr)_8rem_8rem_8rem] items-center gap-3 border-b border-zinc-200 px-4 py-5 text-[1.05rem] text-zinc-900 last:border-b-0">
                                         <div class="text-center text-2xl font-medium text-zinc-900">
-                                            @if ($loop->iteration <= 3)
+                                            @if ($rank <= 3)
                                                 <span class="inline-flex h-10 w-10 items-center justify-center rounded-full text-xl font-medium {{ $rankBadgeClasses }}">
-                                                    {{ $loop->iteration }}
+                                                    {{ $rank }}
                                                 </span>
                                             @else
-                                                {{ $loop->iteration }}
+                                                {{ $rank }}
                                             @endif
                                         </div>
 
@@ -1114,15 +1115,17 @@
                                             </div>
                                         </div>
 
-                                        <div class="text-center text-[1.45rem] font-medium text-[#0ea5a4]">
-                                            {{ $entry['games_rated_label'] }}
+                                        <div class="text-center font-medium">
+                                            {{ $entry['total_spirit_score'] }}
                                         </div>
-                                        <div class="text-center">{{ number_format($entry['overall_spirit_score'], 2) }}</div>
-                                        <div class="text-center">{{ number_format($entry['avg_rules'], 2) }}</div>
-                                        <div class="text-center">{{ number_format($entry['avg_fouls'], 2) }}</div>
-                                        <div class="text-center">{{ number_format($entry['avg_fair'], 2) }}</div>
-                                        <div class="text-center">{{ number_format($entry['avg_attitude'], 2) }}</div>
-                                        <div class="text-center">{{ number_format($entry['avg_communication'], 2) }}</div>
+                                        <div class="text-center font-medium text-[#0ea5a4]">{{ $entry['total_games_played'] }}</div>
+                                        <div class="text-center font-semibold">
+                                            @if (($entry['total_games_played'] ?? 0) > 0 && $entry['average_spirit_score'] !== null)
+                                                {{ number_format($entry['average_spirit_score'], 2) }}
+                                            @else
+                                                —
+                                            @endif
+                                        </div>
                                     </div>
                                 @endforeach
                             </div>
@@ -1413,6 +1416,12 @@
                         'bracketColumns' => $bracketColumns,
                         'bracketPlacements' => $bracketPlacements,
                         'bracketTotalRows' => $bracketTotalRows,
+                        'bracketUsesFeederLinks' => $bracketBoard['uses_feeder_links'] ?? false,
+                        'bracketFeederSvgPaths' => $bracketBoard['feeder_svg_paths'] ?? collect(),
+                        'bracketFeederSvgViewBox' => $bracketBoard['feeder_svg_view_box'] ?? null,
+                        'bracketFeederSvgSize' => $bracketBoard['feeder_svg_size'] ?? null,
+                        'bracketFeederSourceMatchNumbers' => $bracketBoard['feeder_source_match_numbers'] ?? collect(),
+                        'bracketFeederTargetMatchNumbers' => $bracketBoard['feeder_target_match_numbers'] ?? collect(),
                     ])
 
                     {{--
@@ -1639,12 +1648,26 @@
             </section>
         @elseif ($activeTab === 'mvp')
             @php
-                $defaultMvpGender = data_get($statsOptions['gender']->first(), 'value', 'all');
-                $mvpUrl = function (array $overrides = []) use ($tournament, $mvpFilters, $defaultMvpGender) {
+                $mvpGenderFilter = $mvpFilters['gender'] ?? 'all';
+                $mvpActiveGenderChip = in_array($mvpGenderFilter, ['men', 'women'], true)
+                    ? $mvpGenderFilter
+                    : 'mix';
+                $mvpGenderOptions = [
+                    'mix' => 'Mix',
+                    'men' => 'Men',
+                    'women' => 'Women',
+                ];
+                $mvpHasActiveFilters = ($mvpFilters['search'] ?? '') !== ''
+                    || ($mvpFilters['team'] ?? null) !== null
+                    || in_array($mvpGenderFilter, ['men', 'women', 'mix'], true);
+                $mvpUrl = function (array $overrides = []) use ($tournament, $mvpFilters, $mvpGenderFilter, $baseQuery) {
                     return route('tournaments.show', array_merge(
                         ['tournament' => $tournament, 'tab' => 'mvp'],
+                        $baseQuery,
                         collect([
-                            'gender' => $mvpFilters['gender'] !== $defaultMvpGender ? $mvpFilters['gender'] : null,
+                            'search' => ($mvpFilters['search'] ?? '') !== '' ? $mvpFilters['search'] : null,
+                            'team' => ($mvpFilters['team'] ?? null) !== null ? $mvpFilters['team'] : null,
+                            'gender' => $mvpGenderFilter !== 'all' ? $mvpGenderFilter : null,
                         ])->merge($overrides)
                             ->filter(fn ($value) => ! is_null($value) && $value !== '')
                             ->all(),
@@ -1653,67 +1676,142 @@
             @endphp
 
             <section class="rounded-[1rem] border border-zinc-200 bg-white p-6 shadow-sm">
-                <div class="sr-only text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">MVP</div>
-                <h2 class="sr-only mt-2 text-2xl font-semibold tracking-tight text-zinc-900">Tournament MVP race</h2>
+                <div class="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">MVP</div>
+                <h2 class="mt-2 text-2xl font-semibold tracking-tight text-zinc-900">Round Robin MVP breakdown</h2>
+                <p class="mt-2 text-sm text-zinc-600">Based on Round Robin games only.</p>
 
-                <div class="space-y-4">
-                    <div class="grid gap-3 md:grid-cols-[6.5rem_minmax(0,1fr)] md:items-center">
-                        <div class="text-sm font-semibold text-zinc-900">Division</div>
-                        <div class="rounded-full border border-zinc-200 px-2 py-1.5">
-                            <span class="inline-flex rounded-full bg-[#2f55b7] px-5 py-2 text-sm font-semibold text-white">
-                                {{ $statsDivision['label'] }}
-                            </span>
-                        </div>
-                    </div>
-
-                    <div class="grid gap-3 md:grid-cols-[6.5rem_minmax(0,1fr)] md:items-center">
-                        <div class="text-sm font-semibold text-zinc-900">Gender</div>
-                        <div class="flex flex-wrap gap-2 rounded-full border border-zinc-200 px-2 py-1.5">
-                            @foreach ($statsOptions['gender'] as $option)
-                                <a
-                                    href="{{ $mvpUrl(['gender' => $option['value'] === $defaultMvpGender ? null : $option['value']]) }}"
-                                    class="rounded-full px-5 py-2 text-sm font-semibold transition {{ $mvpFilters['gender'] === $option['value']
-                                        ? 'bg-[#2f55b7] text-white'
-                                        : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900' }}"
-                                    wire:navigate
-                                >
-                                    {{ $option['label'] }}
-                                </a>
-                            @endforeach
-                        </div>
-                    </div>
-                </div>
-
-                @if ($mvpLeaderboard->isNotEmpty())
-                    <div class="mt-5 overflow-hidden rounded-[1rem] border border-zinc-200 bg-white">
-                        <div class="overflow-x-auto">
-                            <div class="min-w-[42rem]">
-                                <div class="grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_7rem] items-center gap-4 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-900">
-                                    <div>Name</div>
-                                    <div>Team</div>
-                                    <div>Gender</div>
-                                </div>
-
-                                @foreach ($mvpLeaderboard as $candidate)
-                                    <div class="grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_7rem] items-center gap-4 border-b border-zinc-200 px-5 py-4 last:border-b-0">
-                                        <div class="min-w-0 text-[1.05rem] font-medium text-zinc-950">
-                                            {{ $candidate['display_name'] }}
-                                        </div>
-                                        <div class="min-w-0 text-[1.05rem] text-zinc-900">
-                                            {{ $candidate['team']?->name ?: 'Team not listed' }}
-                                        </div>
-                                        <div class="text-[1.05rem] text-zinc-900">
-                                            {{ $candidate['gender_label'] }}
-                                        </div>
-                                    </div>
-                                @endforeach
-                            </div>
-                        </div>
-                    </div>
+                @if ($roundRobinMvp->status === \App\Support\TournamentRoundRobinMvpPresentation::STATUS_NO_COMPLETED_MATCHES)
+                    <p class="mt-6 text-base leading-7 text-zinc-700">
+                        MVP breakdown will be available once Round Robin games have completed.
+                    </p>
+                @elseif ($roundRobinMvp->status === \App\Support\TournamentRoundRobinMvpPresentation::STATUS_NO_STATS)
+                    <p class="mt-6 text-base leading-7 text-zinc-700">
+                        No player stats recorded yet.
+                    </p>
                 @else
-                    <div class="mt-5 rounded-[0.9rem] border border-dashed border-zinc-200 bg-zinc-50 p-5 text-sm leading-6 text-zinc-600">
-                        No published player stats match the current MVP filters yet.
+                    <div class="mt-6 mb-4 flex flex-wrap gap-2">
+                        @foreach ($mvpGenderOptions as $value => $label)
+                            <a
+                                href="{{ $mvpUrl([
+                                    'gender' => $value,
+                                    'page' => null,
+                                ]) }}"
+                                class="rounded-full border px-4 py-2 text-sm font-semibold transition {{ $mvpActiveGenderChip === $value
+                                    ? 'border-[#2f55b7] bg-[#2f55b7] text-white'
+                                    : 'border-zinc-200 bg-white text-zinc-700 hover:border-blue-300 hover:text-blue-700' }}"
+                                wire:navigate.preserve-scroll
+                            >
+                                {{ $label }}
+                            </a>
+                        @endforeach
                     </div>
+
+                    <form method="GET" action="{{ route('tournaments.show', $tournament) }}" class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end" data-livewire-navigate-form>
+                        <input type="hidden" name="tab" value="mvp">
+                        @foreach ($baseQuery as $queryKey => $queryValue)
+                            <input type="hidden" name="{{ $queryKey }}" value="{{ $queryValue }}">
+                        @endforeach
+                        @if ($mvpGenderFilter !== 'all')
+                            <input type="hidden" name="gender" value="{{ $mvpGenderFilter }}">
+                        @endif
+                        <div class="w-full sm:min-w-[14rem] sm:flex-1">
+                            <label for="mvp-search" class="sr-only">Search player</label>
+                            <input
+                                id="mvp-search"
+                                type="search"
+                                name="search"
+                                value="{{ $mvpFilters['search'] ?? '' }}"
+                                placeholder="Search player..."
+                                class="w-full rounded-[0.8rem] border border-zinc-300 px-4 py-2.5 text-sm text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-[#2f55b7]"
+                            >
+                        </div>
+                        <div class="w-full sm:w-auto">
+                            <label for="mvp-team" class="mb-1 block text-sm font-semibold text-zinc-900">Team</label>
+                            <select
+                                id="mvp-team"
+                                name="team"
+                                class="w-full rounded-[0.8rem] border border-zinc-300 bg-white px-4 py-2.5 text-sm text-zinc-900 outline-none transition focus:border-[#2f55b7] sm:min-w-[12rem]"
+                            >
+                                <option value="">All Teams</option>
+                                @foreach ($mvpTeams as $team)
+                                    <option value="{{ $team['registration_id'] }}" @selected((string) ($mvpFilters['team'] ?? '') === (string) $team['registration_id'])>
+                                        {{ $team['name'] }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button
+                                type="submit"
+                                class="inline-flex items-center justify-center rounded-[0.8rem] bg-[#2f55b7] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#24448f]"
+                            >
+                                Apply
+                            </button>
+                            <a
+                                href="{{ $mvpUrl(['search' => null, 'team' => null, 'gender' => null, 'page' => null]) }}"
+                                class="inline-flex items-center justify-center rounded-[0.8rem] border border-zinc-300 px-5 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                                wire:navigate.preserve-scroll
+                            >
+                                Clear
+                            </a>
+                        </div>
+                    </form>
+
+                    @if ($mvpSelectedTeam)
+                        <div class="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                            Showing MVP breakdown for team:
+                            <strong>{{ $mvpSelectedTeam->team->name }}</strong>
+                            @if ($mvpGenderFilter === 'men')
+                                <span>— Men</span>
+                            @elseif ($mvpGenderFilter === 'women')
+                                <span>— Women</span>
+                            @elseif ($mvpGenderFilter === 'mix')
+                                <span>— Mix</span>
+                            @endif
+                            @if (($mvpFilters['search'] ?? '') !== '')
+                                <span> matching “{{ $mvpFilters['search'] }}”</span>
+                            @endif
+                        </div>
+                    @endif
+
+                    @if ($mvpHasActiveFilters && $mvpOverallLeaderboard->total() === 0 && ! $roundRobinMvp->showMaleSection && ! $roundRobinMvp->showFemaleSection)
+                        <p class="mt-6 text-base leading-7 text-zinc-700">
+                            No MVP results found for the selected filters.
+                        </p>
+                    @else
+                        <div class="mt-6 space-y-6">
+                            @include('shared.partials.tournament-round-robin-mvp-table', [
+                                'title' => 'Overall MVP Breakdown',
+                                'leaderboard' => $mvpOverallLeaderboard,
+                                'paginationUrl' => $mvpUrl,
+                                'emptyMessage' => $mvpHasActiveFilters
+                                    ? 'No MVP results found for the selected filters.'
+                                    : 'No players in this breakdown yet.',
+                            ])
+
+                            @if ($roundRobinMvp->showMaleSection)
+                                @include('shared.partials.tournament-round-robin-mvp-table', [
+                                    'title' => 'Male MVP Breakdown',
+                                    'leaderboard' => $mvpMaleLeaderboard,
+                                    'paginationUrl' => $mvpUrl,
+                                    'emptyMessage' => $mvpHasActiveFilters
+                                        ? 'No MVP results found for the selected filters.'
+                                        : 'No players in this breakdown yet.',
+                                ])
+                            @endif
+
+                            @if ($roundRobinMvp->showFemaleSection)
+                                @include('shared.partials.tournament-round-robin-mvp-table', [
+                                    'title' => 'Female MVP Breakdown',
+                                    'leaderboard' => $mvpFemaleLeaderboard,
+                                    'paginationUrl' => $mvpUrl,
+                                    'emptyMessage' => $mvpHasActiveFilters
+                                        ? 'No MVP results found for the selected filters.'
+                                        : 'No players in this breakdown yet.',
+                                ])
+                            @endif
+                        </div>
+                    @endif
                 @endif
             </section>
         @elseif ($activeTab === 'standings')

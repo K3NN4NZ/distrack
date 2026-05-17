@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\NormalizesUtf8Attributes;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,6 +14,20 @@ use Illuminate\Support\Str;
 class Tournament extends Model
 {
     use HasFactory;
+    use NormalizesUtf8Attributes;
+
+    /**
+     * @var list<string>
+     */
+    protected array $utf8Attributes = [
+        'name',
+        'venue',
+        'description',
+        'city',
+        'province',
+        'country_name',
+        'barangay',
+    ];
 
     protected static function booted(): void
     {

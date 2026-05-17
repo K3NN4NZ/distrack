@@ -6,11 +6,17 @@ use App\Models\MatchSpiritScore;
 use App\Models\Team;
 use App\Models\Tournament;
 use App\Models\TournamentMatch;
+use App\Support\MatchMvp;
 use App\Support\MatchScoreSheetContext;
+use App\Support\MatchSpiritScores;
+use App\Support\SmallDayTwoKnockoutBracket;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
+use App\Support\TournamentRoundRobinMvp;
+use App\Support\TournamentSpiritLeaderboard;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
@@ -272,10 +278,16 @@ class PublicTournamentController extends Controller
         ];
         $spiritSort['direction'] = $this->normalizeSpiritDirection($request, $spiritSort['column']);
         $spiritDirectory = $this->sortSpiritDirectory(
-            $this->buildSpiritDirectory($tournament),
+            TournamentSpiritLeaderboard::getTournamentSpiritLeaderboard($tournament)
+                ->map(fn (array $entry): array => array_merge($entry, [
+                    'country_flag' => $this->countryFlagEmoji($entry['team']->country_name),
+                ])),
             $spiritSort['column'],
             $spiritSort['direction'],
-        );
+        )->values()
+            ->map(fn (array $entry, int $index): array => array_merge($entry, [
+                'rank' => $index + 1,
+            ]));
 
         $crewSections = $tournament->crewMembers
             ->groupBy(fn ($crewMember) => $crewMember->category)
@@ -301,9 +313,30 @@ class PublicTournamentController extends Controller
             ->values();
 
         $mvpFilters = [
-            'gender' => $statsFilters['gender'],
+            'search' => trim($request->string('search')->toString()),
+            'team' => $this->normalizeMvpTeamFilter($request, $tournament),
+            'gender' => $this->normalizeMvpGenderFilter($request),
         ];
-        $mvpLeaderboard = $this->buildTournamentMvpLeaderboard($tournament, $mvpFilters['gender']);
+        $mvpSelectedTeam = $mvpFilters['team'] !== null
+            ? $tournament->registrations->firstWhere('id', $mvpFilters['team'])
+            : null;
+        $roundRobinMvp = TournamentRoundRobinMvp::presentationForTournament($tournament, $mvpFilters);
+        $mvpTeams = $tournament->registrations
+            ->map(fn ($registration): array => [
+                'registration_id' => $registration->id,
+                'name' => $registration->team->name,
+            ])
+            ->sortBy('name')
+            ->values();
+        $mvpOverallLeaderboard = $roundRobinMvp->status === \App\Support\TournamentRoundRobinMvpPresentation::STATUS_READY
+            ? $this->paginateMvpLeaderboard($roundRobinMvp->overall, $request)
+            : null;
+        $mvpMaleLeaderboard = $roundRobinMvp->status === \App\Support\TournamentRoundRobinMvpPresentation::STATUS_READY
+            ? $this->paginateMvpLeaderboard($roundRobinMvp->male, $request)
+            : null;
+        $mvpFemaleLeaderboard = $roundRobinMvp->status === \App\Support\TournamentRoundRobinMvpPresentation::STATUS_READY
+            ? $this->paginateMvpLeaderboard($roundRobinMvp->female, $request)
+            : null;
         $standings = $this->buildStandings($tournament);
 
         return view('tournaments.show', [
@@ -327,6 +360,8 @@ class PublicTournamentController extends Controller
                 'metrics' => $statsMetricOptions,
             ],
             'statsLeaderboard' => $statsLeaderboard,
+            'statsActiveMetric' => $statsFilters['metric'],
+            'statsMetricLabels' => $this->statsMetricLabels(),
             'showCaptains' => $showCaptains,
             'groupMatches' => $groupMatches,
             'bracketMatches' => $bracketMatches,
@@ -342,8 +377,13 @@ class PublicTournamentController extends Controller
             'spiritSort' => $spiritSort,
             'crewSections' => $crewSections,
             'crewDirectory' => $crewDirectory,
+            'roundRobinMvp' => $roundRobinMvp,
             'mvpFilters' => $mvpFilters,
-            'mvpLeaderboard' => $mvpLeaderboard,
+            'mvpSelectedTeam' => $mvpSelectedTeam,
+            'mvpTeams' => $mvpTeams,
+            'mvpOverallLeaderboard' => $mvpOverallLeaderboard,
+            'mvpMaleLeaderboard' => $mvpMaleLeaderboard,
+            'mvpFemaleLeaderboard' => $mvpFemaleLeaderboard,
             'standings' => $standings,
             'scheduleDisplayTimezone' => $scheduleTz,
         ]);
@@ -582,9 +622,9 @@ class PublicTournamentController extends Controller
     {
         $sort = trim($request->string('spirit_sort')->toString());
 
-        return in_array($sort, ['team', 'games_rated', 'overall_spirit_score', 'avg_rules', 'avg_fouls', 'avg_fair', 'avg_attitude', 'avg_communication'], true)
+        return in_array($sort, ['team', 'total_games_played', 'total_spirit_score', 'average_spirit_score'], true)
             ? $sort
-            : 'overall_spirit_score';
+            : 'average_spirit_score';
     }
 
     /**
@@ -606,23 +646,19 @@ class PublicTournamentController extends Controller
     protected function sortSpiritDirectory(Collection $spiritDirectory, string $column, string $direction): Collection
     {
         $sortOrder = match ($column) {
-            'team' => ['team', 'overall_spirit_score', 'games_rated'],
-            'games_rated' => ['games_rated', 'overall_spirit_score', 'team'],
-            'avg_rules' => ['avg_rules', 'overall_spirit_score', 'games_rated', 'team'],
-            'avg_fouls' => ['avg_fouls', 'overall_spirit_score', 'games_rated', 'team'],
-            'avg_fair' => ['avg_fair', 'overall_spirit_score', 'games_rated', 'team'],
-            'avg_attitude' => ['avg_attitude', 'overall_spirit_score', 'games_rated', 'team'],
-            'avg_communication' => ['avg_communication', 'overall_spirit_score', 'games_rated', 'team'],
-            default => ['overall_spirit_score', 'games_rated', 'avg_communication', 'team'],
+            'team' => ['team', 'average_spirit_score', 'total_spirit_score', 'total_games_played'],
+            'total_games_played' => ['total_games_played', 'average_spirit_score', 'total_spirit_score', 'team'],
+            'total_spirit_score' => ['total_spirit_score', 'average_spirit_score', 'total_games_played', 'team'],
+            default => ['average_spirit_score', 'total_spirit_score', 'total_games_played', 'team'],
         };
 
         return $spiritDirectory
             ->sort(function (array $left, array $right) use ($sortOrder, $direction): int {
                 foreach ($sortOrder as $field) {
                     if ($field === 'team') {
-                        $comparison = ($left['team']->name ?? '') <=> ($right['team']->name ?? '');
+                        $comparison = strcasecmp($left['team']->name ?? '', $right['team']->name ?? '');
                     } else {
-                        $comparison = $left[$field] <=> $right[$field];
+                        $comparison = ($left[$field] ?? 0) <=> ($right[$field] ?? 0);
                     }
 
                     if ($comparison !== 0) {
@@ -648,110 +684,7 @@ class PublicTournamentController extends Controller
      */
     protected function extractReceivedSpiritScore(TournamentMatch $match, bool $isHome): ?array
     {
-        $scoredTeamId = $isHome
-            ? $match->homeRegistration?->team_id
-            : $match->awayRegistration?->team_id;
-
-        if ($scoredTeamId) {
-            $record = $match->relationLoaded('spiritScores')
-                ? $match->spiritScores->firstWhere('scored_team_id', (int) $scoredTeamId)
-                : MatchSpiritScore::query()
-                    ->where('match_id', $match->id)
-                    ->where('scored_team_id', $scoredTeamId)
-                    ->first();
-
-            if ($record instanceof MatchSpiritScore) {
-                return [
-                    'rules' => $record->knowledge_rules_score,
-                    'fouls' => $record->fouls_body_contact_score,
-                    'fair' => $record->fair_mindedness_score,
-                    'attitude' => $record->positive_attitude_score,
-                    'communication' => $record->communication_respect_score,
-                    'total' => $record->total_score,
-                ];
-            }
-        }
-
-        if (! filled($match->notes)) {
-            return null;
-        }
-
-        $payload = json_decode($match->notes, true);
-
-        if (! is_array($payload)) {
-            return null;
-        }
-
-        $scopes = array_filter([
-            data_get($payload, 'spirit_scores'),
-            data_get($payload, 'spirit'),
-            $payload,
-        ], 'is_array');
-
-        $keys = $isHome
-            ? ['home_received', 'home', 'home_team', (string) $match->home_registration_id]
-            : ['away_received', 'away', 'away_team', (string) $match->away_registration_id];
-
-        foreach ($scopes as $scope) {
-            foreach ($keys as $key) {
-                $candidate = data_get($scope, $key);
-
-                if (! is_array($candidate)) {
-                    continue;
-                }
-
-                $normalized = $this->normalizeSpiritScorePayload($candidate);
-
-                if ($normalized) {
-                    return $normalized;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Normalize a spirit-score payload into the public five-column rubric.
-     *
-     * @return array{rules:int,fouls:int,fair:int,attitude:int,communication:int,total:int}|null
-     */
-    protected function normalizeSpiritScorePayload(array $payload): ?array
-    {
-        $rules = $this->extractSpiritMetricValue($payload, ['rules', 'knowledge', 'knowledge_and_use']);
-        $fouls = $this->extractSpiritMetricValue($payload, ['fouls', 'fouls_and_body', 'body_contact']);
-        $fair = $this->extractSpiritMetricValue($payload, ['fair', 'fair_mindedness', 'fairness']);
-        $attitude = $this->extractSpiritMetricValue($payload, ['attitude', 'attit', 'positive_attitude', 'self_control']);
-        $communication = $this->extractSpiritMetricValue($payload, ['communication', 'comm']);
-
-        if ($rules === null && $fouls === null && $fair === null && $attitude === null && $communication === null) {
-            return null;
-        }
-
-        return [
-            'rules' => $rules ?? 0,
-            'fouls' => $fouls ?? 0,
-            'fair' => $fair ?? 0,
-            'attitude' => $attitude ?? 0,
-            'communication' => $communication ?? 0,
-            'total' => (int) (($rules ?? 0) + ($fouls ?? 0) + ($fair ?? 0) + ($attitude ?? 0) + ($communication ?? 0)),
-        ];
-    }
-
-    /**
-     * Extract a numeric spirit-metric value from a payload using known aliases.
-     */
-    protected function extractSpiritMetricValue(array $payload, array $keys): ?int
-    {
-        foreach ($keys as $key) {
-            $value = data_get($payload, $key);
-
-            if (is_numeric($value)) {
-                return (int) $value;
-            }
-        }
-
-        return null;
+        return MatchSpiritScores::receivedBreakdownForMatchSide($match, $isHome);
     }
 
     /**
@@ -1231,6 +1164,19 @@ class PublicTournamentController extends Controller
             })
             ->values();
 
+        $feederLinks = $this->resolvePublicBracketFeederLinks($positionedColumns);
+        $usesFeederLinks = $feederLinks->isNotEmpty();
+
+        if ($usesFeederLinks) {
+            $positionedColumns = $positionedColumns
+                ->map(function (array $column): array {
+                    $column['connectors'] = collect();
+
+                    return $column;
+                })
+                ->values();
+        }
+
         $positionedPlacements = $placements
             ->values()
             ->map(function (array $card, int $index) use ($baseRows): array {
@@ -1245,12 +1191,134 @@ class PublicTournamentController extends Controller
             (int) ($positionedPlacements->max('slot') ?? 0)
         );
 
+        $boardTotalRows = max($totalRows, 1);
+        $feederSvgPaths = $usesFeederLinks
+            ? $this->buildPublicBracketFeederSvgPaths($feederLinks, $positionedColumns->count(), $boardTotalRows)
+            : collect();
+        $feederSvgViewBox = $usesFeederLinks
+            ? $this->publicBracketFeederSvgViewBox($positionedColumns->count(), $boardTotalRows)
+            : null;
+        $feederSvgSize = $usesFeederLinks
+            ? $this->publicBracketFeederSvgSizeRem($positionedColumns->count(), $boardTotalRows)
+            : null;
+
         return [
             'columns' => $positionedColumns,
             'placements' => $positionedPlacements,
             'base_rows' => $baseRows,
-            'total_rows' => max($totalRows, 1),
+            'total_rows' => $boardTotalRows,
+            'uses_feeder_links' => $usesFeederLinks,
+            'feeder_svg_paths' => $feederSvgPaths,
+            'feeder_svg_view_box' => $feederSvgViewBox,
+            'feeder_svg_size' => $feederSvgSize,
+            'feeder_source_match_numbers' => $usesFeederLinks
+                ? $feederLinks->pluck('from')->unique()->values()
+                : collect(),
+            'feeder_target_match_numbers' => $usesFeederLinks
+                ? $feederLinks->pluck('to')->unique()->values()
+                : collect(),
         ];
+    }
+
+    protected function publicBracketFeederSvgViewBox(int $columnCount, int $totalRows): string
+    {
+        ['width' => $width, 'height' => $height] = $this->publicBracketFeederSvgDimensions($columnCount, $totalRows);
+
+        return sprintf('0 0 %.3f %.3f', $width, $height);
+    }
+
+    /**
+     * @return array{width: string, height: string}
+     */
+    protected function publicBracketFeederSvgSizeRem(int $columnCount, int $totalRows): array
+    {
+        ['width' => $width, 'height' => $height] = $this->publicBracketFeederSvgDimensions($columnCount, $totalRows);
+
+        return [
+            'width' => $width.'rem',
+            'height' => $height.'rem',
+        ];
+    }
+
+    /**
+     * @return array{width: float, height: float}
+     */
+    protected function publicBracketFeederSvgDimensions(int $columnCount, int $totalRows): array
+    {
+        $columnWidth = 16.8;
+        $columnGap = 1.5;
+        $slotHeight = 8.5;
+        $cardHeight = 7.75;
+
+        return [
+            'width' => (max($columnCount, 1) * $columnWidth) + (max($columnCount - 1, 0) * $columnGap),
+            'height' => ($totalRows * $slotHeight) + $cardHeight,
+        ];
+    }
+
+    /**
+     * Resolve cross-over feeder links for the public bracket board (e.g. M37+M40 → M43).
+     *
+     * @param  Collection<int, array<string, mixed>>  $columns
+     * @return Collection<int, array{from: int, to: int, from_slot: int, to_slot: int, from_column: int, to_column: int}>
+     */
+    protected function resolvePublicBracketFeederLinks(Collection $columns): Collection
+    {
+        $slotByNumber = [];
+        $columnIndexByNumber = [];
+
+        foreach ($columns as $columnIndex => $column) {
+            foreach ($column['cards'] as $card) {
+                $matchNumber = (int) ($card['match']->match_number ?? 0);
+
+                if ($matchNumber < 1) {
+                    continue;
+                }
+
+                $slotByNumber[$matchNumber] = (int) $card['slot'];
+                $columnIndexByNumber[$matchNumber] = (int) $columnIndex;
+            }
+        }
+
+        return collect(SmallDayTwoKnockoutBracket::championshipTreeFeederPairs())
+            ->filter(fn (array $pair): bool => isset($slotByNumber[$pair[0]], $slotByNumber[$pair[1]]))
+            ->map(fn (array $pair): array => [
+                'from' => $pair[0],
+                'to' => $pair[1],
+                'from_slot' => $slotByNumber[$pair[0]],
+                'to_slot' => $slotByNumber[$pair[1]],
+                'from_column' => $columnIndexByNumber[$pair[0]],
+                'to_column' => $columnIndexByNumber[$pair[1]],
+            ])
+            ->values();
+    }
+
+    /**
+     * Build SVG path commands for explicit bracket feeder lines.
+     *
+     * @param  Collection<int, array{from: int, to: int, from_slot: int, to_slot: int, from_column: int, to_column: int}>  $feederLinks
+     * @return Collection<int, array{d: string}>
+     */
+    protected function buildPublicBracketFeederSvgPaths(Collection $feederLinks, int $columnCount, int $totalRows): Collection
+    {
+        $columnWidth = 16.8;
+        $columnGap = 1.5;
+        $slotHeight = 8.5;
+        $cardHeight = 7.75;
+
+        return $feederLinks->map(function (array $link) use ($columnWidth, $columnGap, $slotHeight, $cardHeight): array {
+            $y1 = (($link['from_slot'] - 1) * $slotHeight) + ($cardHeight / 2);
+            $y2 = (($link['to_slot'] - 1) * $slotHeight) + ($cardHeight / 2);
+            $fromColumn = (int) $link['from_column'];
+            $toColumn = (int) $link['to_column'];
+            $x1 = (($fromColumn + 1) * $columnWidth) + ($fromColumn * $columnGap);
+            $x2 = ($toColumn * ($columnWidth + $columnGap));
+            $midX = ($x1 + $x2) / 2;
+
+            return [
+                'd' => sprintf('M %.3f %.3f H %.3f V %.3f H %.3f', $x1, $y1, $midX, $y2, $x2),
+            ];
+        })->values();
     }
 
     /**
@@ -1566,18 +1634,86 @@ class PublicTournamentController extends Controller
     }
 
     /**
+     * Normalize the requested tournament MVP team filter.
+     */
+    protected function normalizeMvpTeamFilter(Request $request, Tournament $tournament): ?int
+    {
+        $team = $request->string('team')->toString();
+
+        if ($team === '') {
+            return null;
+        }
+
+        $registrationId = (int) $team;
+        $validIds = $tournament->registrations->pluck('id');
+
+        return $validIds->contains($registrationId) ? $registrationId : null;
+    }
+
+    /**
+     * Normalize the requested tournament MVP gender filter.
+     */
+    protected function normalizeMvpGenderFilter(Request $request): string
+    {
+        $gender = strtolower(trim($request->string('gender')->toString()));
+
+        if (in_array($gender, ['men', 'women', 'mix'], true)) {
+            return $gender;
+        }
+
+        return 'all';
+    }
+
+    /**
+     * Paginate the ranked public tournament MVP leaderboard.
+     */
+    protected function paginateMvpLeaderboard(Collection $leaderboard, Request $request): LengthAwarePaginator
+    {
+        $perPage = 15;
+        $page = max($request->integer('page', 1), 1);
+
+        return (new LengthAwarePaginator(
+            $leaderboard->forPage($page, $perPage)->values(),
+            $leaderboard->count(),
+            $perPage,
+            $page,
+            [
+                'path' => $request->url(),
+                'pageName' => 'page',
+            ],
+        ))->appends(collect($request->query())->except('page')->all());
+    }
+
+    /**
      * Resolve tie-break sort priority for the selected stats metric.
      *
      * @return list<string>
      */
     protected function statsLeaderboardSortOrder(string $metric): array
     {
-        return match ($metric) {
-            'assists' => ['assists', 'total_offense', 'goals', 'blocks', 'matches_played'],
-            'blocks' => ['blocks', 'total_offense', 'goals', 'assists', 'matches_played'],
-            'total_offense' => ['total_offense', 'goals', 'assists', 'blocks', 'matches_played'],
-            default => ['goals', 'total_offense', 'assists', 'blocks', 'matches_played'],
-        };
+        $allowedMetrics = ['goals', 'assists', 'blocks', 'total_offense'];
+        $primary = in_array($metric, $allowedMetrics, true) ? $metric : 'goals';
+        $tieBreakers = array_values(array_filter(
+            ['goals', 'assists', 'blocks'],
+            fn (string $key): bool => $key !== $primary,
+        ));
+
+        return [$primary, ...$tieBreakers];
+    }
+
+    /**
+     * Column labels for the public stats leaderboard metric filter.
+     *
+     * @return array<string, string>
+     */
+    protected function statsMetricLabels(): array
+    {
+        return [
+            'goals' => 'Goals',
+            'assists' => 'Assists',
+            'blocks' => 'Blocks',
+            'total_offense' => 'Total O',
+        ];
     }
 
     /**
@@ -2141,9 +2277,13 @@ class PublicTournamentController extends Controller
     /**
      * Show a public match detail page from the tournament schedule.
      */
-    public function showMatch(Request $request, Tournament $tournament, TournamentMatch $match): View
+    public function showMatch(Request $request, Tournament $tournament, TournamentMatch $match): View|RedirectResponse
     {
         abort_unless($tournament->is_public && $match->tournament_id === $tournament->id, 404);
+
+        if (trim($request->string('tab')->toString()) === 'summary') {
+            return redirect()->to($request->fullUrlWithQuery(['tab' => 'score-breakdown']));
+        }
 
         $activeMatchTab = $this->normalizeMatchTab($request);
 
@@ -2183,18 +2323,8 @@ class PublicTournamentController extends Controller
             ->filter(fn ($stat) => $stat->teamMember?->team_id === $awayTeam?->id)
             ->values();
 
-        $mvpCandidates = $match->playerStats
-            ->map(function ($stat) {
-                $impact = ((int) $stat->goals * 3) + ((int) $stat->assists * 2) + (int) $stat->blocks;
-
-                return [
-                    'stat' => $stat,
-                    'impact' => $impact,
-                ];
-            })
-            ->filter(fn (array $candidate) => $candidate['impact'] > 0)
-            ->sortByDesc('impact')
-            ->values();
+        $matchMvp = MatchMvp::presentationForMatch($match);
+        $matchSpirit = MatchSpiritScores::presentationForMatch($match);
 
         $teamLeadership = collect([
             'home' => $homeTeam?->members?->whereIn('role', ['captain', 'spirit_captain'])->values() ?? collect(),
@@ -2273,12 +2403,12 @@ class PublicTournamentController extends Controller
             'awayTeam' => $awayTeam,
             'homeStats' => $homeStats,
             'awayStats' => $awayStats,
-            'mvpCandidates' => $mvpCandidates,
+            'matchMvp' => $matchMvp,
+            'matchSpirit' => $matchSpirit,
             'teamLeadership' => $teamLeadership,
             'teamSummaries' => $teamSummaries,
             'matchScoreSheet' => $matchScoreSheet,
             'comparisonRows' => $comparisonRows,
-            'resultsLocked' => $tournament->status !== 'completed',
             'backLink' => route('tournaments.show', array_filter([
                 'tournament' => $tournament,
                 'tab' => 'schedule',
@@ -2347,9 +2477,9 @@ class PublicTournamentController extends Controller
     {
         $tab = trim($request->string('tab')->toString());
 
-        return in_array($tab, ['summary', 'stats', 'spirit', 'mvp'], true)
+        return in_array($tab, ['score-breakdown', 'stats', 'spirit', 'mvp'], true)
             ? $tab
-            : 'summary';
+            : 'score-breakdown';
     }
 
     /**

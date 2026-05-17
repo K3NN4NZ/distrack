@@ -36,8 +36,10 @@
 @endphp
 
 <style>
+    @charset "UTF-8";
+
     .report-print-area {
-        font-family: 'Times New Roman', Times, serif;
+        font-family: DejaVu Sans, 'Times New Roman', Times, serif;
         max-width: 7.2in;
         margin: 0 auto;
         padding: 0;

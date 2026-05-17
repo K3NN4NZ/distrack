@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Team;
 use App\Models\TeamMember;
+use App\Support\Utf8Text;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -102,10 +103,19 @@ class AdminTeamRosterController extends Controller
             return redirect()->route('admin.teams.roster.index', $team)->with('status', 'roster-upload-invalid');
         }
 
-        $handle = fopen($path, 'r');
+        $contents = file_get_contents($path);
+        if ($contents === false) {
+            return redirect()->route('admin.teams.roster.index', $team)->with('status', 'roster-upload-invalid');
+        }
+
+        $contents = Utf8Text::normalizeUtf8($contents) ?? '';
+        $handle = fopen('php://memory', 'r+');
         if ($handle === false) {
             return redirect()->route('admin.teams.roster.index', $team)->with('status', 'roster-upload-invalid');
         }
+
+        fwrite($handle, $contents);
+        rewind($handle);
 
         $header = fgetcsv($handle);
         if ($header === false) {
@@ -145,7 +155,7 @@ class AdminTeamRosterController extends Controller
                 continue;
             }
 
-            $name = trim((string) ($row[$indexes['name']] ?? ''));
+            $name = Utf8Text::prepareForStorage((string) ($row[$indexes['name']] ?? '')) ?? '';
             if ($name === '') {
                 $skipped++;
                 $errors[] = __('Row :row: empty name', ['row' => $rowNum]);
@@ -377,6 +387,6 @@ class AdminTeamRosterController extends Controller
 
         $s = trim((string) $value);
 
-        return $s === '' ? null : $s;
+        return $s === '' ? null : Utf8Text::prepareForStorage($s);
     }
 }

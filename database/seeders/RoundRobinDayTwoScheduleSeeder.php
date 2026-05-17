@@ -20,7 +20,8 @@ use InvalidArgumentException;
  */
 class RoundRobinDayTwoScheduleSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 9;
+    public const TOURNAMENT_ID = 5;
+
     public function run(): void
     {
         $tournament = Tournament::query()->find(self::TOURNAMENT_ID);

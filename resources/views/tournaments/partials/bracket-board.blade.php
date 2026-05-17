@@ -1,34 +1,63 @@
+@php
+    use App\Support\SmallDayTwoKnockoutBracket;
+
+    $bracketUsesFeederLinks = $bracketUsesFeederLinks ?? false;
+    $bracketFeederSvgPaths = $bracketFeederSvgPaths ?? collect();
+    $bracketFeederSvgViewBox = $bracketFeederSvgViewBox ?? null;
+    $bracketFeederSourceMatchNumbers = collect($bracketFeederSourceMatchNumbers ?? []);
+    $bracketFeederTargetMatchNumbers = collect($bracketFeederTargetMatchNumbers ?? []);
+    $knockoutGameDefinitions = SmallDayTwoKnockoutBracket::gameDefinitions();
+@endphp
+
 <div class="mt-6 overflow-x-auto pb-3">
-    <div class="flex min-w-[62rem] items-start gap-6 [--bracket-card-height:7.75rem] [--bracket-gutter:2rem] [--bracket-slot-height:8.5rem] [--bracket-connector-gap:2px]">
+    <div class="relative min-w-[62rem] [--bracket-card-height:7.75rem] [--bracket-column-gap:1.5rem] [--bracket-column-width:16.8rem] [--bracket-gutter:2rem] [--bracket-header-offset:2.75rem] [--bracket-slot-height:8.5rem] [--bracket-connector-gap:2px]">
+        @if ($bracketUsesFeederLinks && $bracketFeederSvgPaths->isNotEmpty() && $bracketFeederSvgViewBox && $bracketFeederSvgSize)
+            <svg
+                class="pointer-events-none absolute left-0 z-0 overflow-visible text-zinc-300"
+                style="top: var(--bracket-header-offset); width: {{ $bracketFeederSvgSize['width'] }}; height: {{ $bracketFeederSvgSize['height'] }};"
+                viewBox="{{ $bracketFeederSvgViewBox }}"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+            >
+                @foreach ($bracketFeederSvgPaths as $path)
+                    <path d="{{ $path['d'] }}" fill="none" stroke="currentColor" stroke-width="1" vector-effect="non-scaling-stroke"></path>
+                @endforeach
+            </svg>
+        @endif
+
+        <div class="flex items-start gap-[var(--bracket-column-gap)]">
         @foreach ($bracketColumns as $column)
             @php
                 $isFirstBracketColumn = $loop->first;
                 $isLastBracketColumn = $loop->last;
             @endphp
 
-            <div class="w-[16.8rem] shrink-0">
+            <div class="w-[var(--bracket-column-width)] shrink-0">
                 <div class="pl-3 text-[1.7rem] font-semibold tracking-tight text-zinc-900">{{ $column['label'] }}</div>
 
                 <div
                     class="relative mt-2"
                     style="height: calc({{ $bracketTotalRows }} * var(--bracket-slot-height) + var(--bracket-card-height));"
                 >
-                    @foreach ($column['connectors'] as $connector)
-                        <div
-                            class="pointer-events-none absolute z-0 block"
-                            style="
-                                right: calc(var(--bracket-gutter) / -2);
-                                top: calc(({{ $connector['from_slot'] }} - 1) * var(--bracket-slot-height) + (var(--bracket-card-height) / 2));
-                                height: calc(({{ $connector['to_slot'] - $connector['from_slot'] }}) * var(--bracket-slot-height));
-                            "
-                        >
-                            <div class="h-full w-px bg-zinc-300"></div>
-                        </div>
-                    @endforeach
+                    @if (! $bracketUsesFeederLinks)
+                        @foreach ($column['connectors'] as $connector)
+                            <div
+                                class="pointer-events-none absolute z-0 block"
+                                style="
+                                    right: calc(var(--bracket-gutter) / -2);
+                                    top: calc(({{ $connector['from_slot'] }} - 1) * var(--bracket-slot-height) + (var(--bracket-card-height) / 2));
+                                    height: calc(({{ $connector['to_slot'] - $connector['from_slot'] }}) * var(--bracket-slot-height));
+                                "
+                            >
+                                <div class="h-full w-px bg-zinc-300"></div>
+                            </div>
+                        @endforeach
+                    @endif
 
                     @foreach ($column['cards'] as $card)
                         @php
                             $match = $card['match'];
+                            $matchNumber = (int) ($match->match_number ?? 0);
                             $homeTeam = $match->homeRegistration?->team;
                             $awayTeam = $match->awayRegistration?->team;
                             $homeTeamLogo = $homeTeam?->logoUrl();
@@ -50,6 +79,14 @@
                                 default => 'Scheduled',
                             };
                             $matchChip = $match->match_number ? 'M'.$match->match_number : null;
+                            $gameDefinition = $knockoutGameDefinitions[$matchNumber] ?? null;
+                            $feederSourceLabel = $gameDefinition
+                                ? trim(($gameDefinition['home_placeholder'] ?? '').' vs '.($gameDefinition['away_placeholder'] ?? ''))
+                                : null;
+                            $showIncomingFeederLine = ! $bracketUsesFeederLinks
+                                || ($matchNumber > 0 && $bracketFeederTargetMatchNumbers->contains($matchNumber));
+                            $showOutgoingFeederLine = ! $bracketUsesFeederLinks
+                                || ($matchNumber > 0 && $bracketFeederSourceMatchNumbers->contains($matchNumber));
                         @endphp
 
                         <div
@@ -57,7 +94,7 @@
                             style="top: calc(({{ $card['slot'] }} - 1) * var(--bracket-slot-height));"
                         >
                             <div class="relative">
-                                @if (! $isFirstBracketColumn)
+                                @if (! $isFirstBracketColumn && $showIncomingFeederLine)
                                     <div
                                         class="pointer-events-none absolute top-1/2 z-0 block h-px -translate-y-1/2 bg-zinc-300"
                                         style="
@@ -67,7 +104,7 @@
                                     ></div>
                                 @endif
 
-                                @if (! $isLastBracketColumn || $column['key'] === 'finals')
+                                @if ((! $isLastBracketColumn || $column['key'] === 'finals') && $showOutgoingFeederLine)
                                     <div
                                         class="pointer-events-none absolute top-1/2 z-0 block h-px -translate-y-1/2 bg-zinc-300"
                                         style="
@@ -87,6 +124,11 @@
                                             <div class="truncate text-[11px] font-semibold uppercase leading-4 text-zinc-900">
                                                 {{ $match->round_label ?: str($match->stage)->replace('_', ' ')->headline() }}
                                             </div>
+                                            @if ($bracketUsesFeederLinks && filled($feederSourceLabel) && in_array($matchNumber, [43, 44, 48], true))
+                                                <div class="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-zinc-500">
+                                                    {{ $feederSourceLabel }}
+                                                </div>
+                                            @endif
                                             <div class="mt-0.5 text-xs font-medium text-zinc-500">
                                                 {{ $match->pitch?->name ?: 'Field TBD' }}
                                             </div>
@@ -261,5 +303,6 @@
                 </div>
             </div>
         @endforeach
+        </div>
     </div>
 </div>

@@ -2,7 +2,7 @@
 
 @php
     $tabs = [
-        'summary' => 'Summary',
+        'score-breakdown' => 'Score Breakdown',
         'stats' => 'Stats',
         'spirit' => 'Spirit',
         'mvp' => 'MVP',
@@ -188,91 +188,68 @@
                 </div>
             </section>
         @elseif ($activeMatchTab === 'spirit')
-            <section class="rounded-[1rem] border border-zinc-200 bg-white px-6 py-14 text-center shadow-sm">
-                @if ($resultsLocked)
-                    <div class="mx-auto max-w-3xl text-2xl leading-10 text-zinc-900">
-                        The tournament is still in progress. The organizer will display the Spirit Score once it concludes.
-                    </div>
-                @else
-                    <div class="grid gap-5 xl:grid-cols-2">
-                        @foreach ([
-                            ['team' => $homeTeam, 'leaders' => $teamLeadership['home']],
-                            ['team' => $awayTeam, 'leaders' => $teamLeadership['away']],
-                        ] as $panel)
-                            <div class="rounded-[0.9rem] border border-zinc-200 bg-zinc-50 p-5 text-left">
-                                <div class="text-lg font-semibold text-zinc-900">{{ $panel['team']?->name ?: 'Team' }}</div>
-                                <div class="mt-1 text-sm text-zinc-500">{{ $panel['team']?->locationLabel() ?: 'Location not listed' }}</div>
+            <section class="overflow-hidden rounded-[1rem] border border-zinc-200 bg-white shadow-sm">
+                <div class="border-b border-zinc-200 bg-zinc-50 px-6 py-4 text-center text-2xl font-semibold text-zinc-900">
+                    Spirit Score
+                </div>
 
-                                @if ($panel['leaders']->isNotEmpty())
-                                    <div class="mt-4 space-y-3">
-                                        @foreach ($panel['leaders'] as $leader)
-                                            <div class="rounded-[0.8rem] border border-zinc-200 bg-white px-4 py-3">
-                                                <div class="font-semibold text-zinc-900">{{ $leader->name }}</div>
-                                                <div class="mt-1 text-sm text-zinc-500">{{ $leader->nickname }}</div>
-                                                <div class="mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold {{ $leader->role === 'captain' ? 'bg-[#e6efff] text-[#2f55b7]' : 'bg-[#fff1e8] text-[#b45309]' }}">
-                                                    {{ str($leader->role)->replace('_', ' ')->headline() }}
-                                                </div>
-                                            </div>
-                                        @endforeach
-                                    </div>
-                                @else
-                                    <div class="mt-4 text-sm text-zinc-500">
-                                        No captains or spirit captains have been tagged for this team yet.
-                                    </div>
-                                @endif
-                            </div>
-                        @endforeach
-                    </div>
-                @endif
+                <div class="px-6 py-10">
+                    @if ($matchSpirit->status === \App\Support\MatchSpiritPresentation::STATUS_NOT_COMPLETED)
+                        <p class="mx-auto max-w-3xl text-center text-xl leading-9 text-zinc-900">
+                            Spirit scores will be available once this match is completed.
+                        </p>
+                    @elseif ($matchSpirit->status === \App\Support\MatchSpiritPresentation::STATUS_NO_DATA)
+                        <p class="mx-auto max-w-3xl text-center text-xl leading-9 text-zinc-900">
+                            No spirit score recorded yet.
+                        </p>
+                    @else
+                        @if ($matchSpirit->winnerMessage)
+                            <p class="mx-auto mb-6 max-w-3xl text-center text-base font-semibold text-[#2f55b7]">
+                                {{ $matchSpirit->winnerMessage }}
+                            </p>
+                        @endif
+
+                        <div class="mx-auto grid max-w-3xl gap-6 xl:grid-cols-2">
+                            @include('shared.partials.match-spirit-card', ['spirit' => $matchSpirit->home])
+                            @include('shared.partials.match-spirit-card', ['spirit' => $matchSpirit->away])
+                        </div>
+                    @endif
+                </div>
             </section>
         @elseif ($activeMatchTab === 'mvp')
-            <section class="rounded-[1rem] border border-zinc-200 bg-white px-6 py-14 text-center shadow-sm">
-                @if ($resultsLocked)
-                    <div class="mx-auto max-w-3xl text-2xl leading-10 text-zinc-900">
-                        The tournament is still in progress. The organizer will display the MVP results once it concludes.
-                    </div>
-                @elseif ($mvpCandidates->isNotEmpty())
-                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3 text-left">
-                        @foreach ($mvpCandidates->take(6) as $index => $candidate)
-                            @php
-                                $stat = $candidate['stat'];
-                                $member = $stat->teamMember;
-                            @endphp
-                            <div class="rounded-[0.9rem] border border-zinc-200 bg-zinc-50 p-5">
-                                <div class="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                                    {{ $index === 0 ? 'Match MVP' : 'Impact Leader' }}
-                                </div>
-                                <div class="mt-3 text-xl font-semibold text-zinc-900">{{ $member?->name }}</div>
-                                <div class="mt-1 text-sm text-zinc-500">{{ $member?->team?->name }}</div>
+            <section class="overflow-hidden rounded-[1rem] border border-zinc-200 bg-white shadow-sm">
+                <div class="border-b border-zinc-200 bg-zinc-50 px-6 py-4 text-center text-2xl font-semibold text-zinc-900">
+                    MVP
+                </div>
 
-                                <div class="mt-4 grid grid-cols-3 gap-3 text-center">
-                                    <div class="rounded-[0.8rem] border border-zinc-200 bg-white px-3 py-3">
-                                        <div class="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">Goals</div>
-                                        <div class="mt-2 text-2xl font-semibold text-zinc-900">{{ $stat->goals }}</div>
-                                    </div>
-                                    <div class="rounded-[0.8rem] border border-zinc-200 bg-white px-3 py-3">
-                                        <div class="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">Assists</div>
-                                        <div class="mt-2 text-2xl font-semibold text-zinc-900">{{ $stat->assists }}</div>
-                                    </div>
-                                    <div class="rounded-[0.8rem] border border-zinc-200 bg-white px-3 py-3">
-                                        <div class="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">Blocks</div>
-                                        <div class="mt-2 text-2xl font-semibold text-zinc-900">{{ $stat->blocks }}</div>
-                                    </div>
-                                </div>
-
-                                <div class="mt-4 text-sm font-semibold text-zinc-700">
-                                    Impact Score: {{ $candidate['impact'] }}
-                                </div>
-                            </div>
-                        @endforeach
-                    </div>
-                @else
-                    <div class="mx-auto max-w-3xl text-2xl leading-10 text-zinc-900">
-                        No published player stats yet, so MVP results are not available for this match.
-                    </div>
-                @endif
+                <div class="px-6 py-10">
+                    @if ($matchMvp->status === \App\Support\MatchMvpPresentation::STATUS_NOT_COMPLETED)
+                        <p class="mx-auto max-w-3xl text-center text-xl leading-9 text-zinc-900">
+                            MVP results will be available once this match is completed.
+                        </p>
+                    @elseif ($matchMvp->status === \App\Support\MatchMvpPresentation::STATUS_PENDING)
+                        <p class="mx-auto max-w-3xl text-center text-xl leading-9 text-zinc-900">
+                            MVP pending
+                        </p>
+                    @elseif ($matchMvp->status === \App\Support\MatchMvpPresentation::STATUS_NO_DATA)
+                        <p class="mx-auto max-w-3xl text-center text-xl leading-9 text-zinc-900">
+                            No MVP data available yet.
+                        </p>
+                    @else
+                        <div class="mx-auto grid max-w-3xl gap-6">
+                            @include('shared.partials.match-mvp-card', [
+                                'label' => 'Winning Team MVP',
+                                'mvp' => $matchMvp->winningMvp,
+                            ])
+                            @include('shared.partials.match-mvp-card', [
+                                'label' => 'Losing Team MVP',
+                                'mvp' => $matchMvp->losingMvp,
+                            ])
+                        </div>
+                    @endif
+                </div>
             </section>
-        @else
+        @elseif ($activeMatchTab === 'score-breakdown')
             <section class="overflow-hidden rounded-[1rem] border border-zinc-200 bg-white shadow-sm">
                 <div class="border-b border-zinc-200 bg-zinc-50 px-6 py-4 text-center text-2xl font-semibold text-zinc-900">
                     Score Breakdown

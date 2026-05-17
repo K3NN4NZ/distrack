@@ -427,6 +427,31 @@ test('public tournament stats tab shows leaderboard filters and applies stats se
         ]);
     }
 
+    $roundRobinMatch = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'match_number' => 2,
+        'scheduled_at' => now()->addWeeks(2)->setTime(11, 0),
+        'status' => 'completed',
+        'home_score' => 8,
+        'away_score' => 6,
+    ]);
+
+    foreach ([
+        ['member' => $homeFemale, 'goals' => 1, 'assists' => 2, 'blocks' => 0],
+        ['member' => $awayFemale, 'goals' => 2, 'assists' => 1, 'blocks' => 0],
+    ] as $statLine) {
+        MatchPlayerStat::query()->create([
+            'match_id' => $roundRobinMatch->id,
+            'team_member_id' => $statLine['member']->id,
+            'goals' => $statLine['goals'],
+            'assists' => $statLine['assists'],
+            'blocks' => $statLine['blocks'],
+        ]);
+    }
+
     $this->get(route('tournaments.show', [
         'tournament' => $tournament,
         'tab' => 'stats',
@@ -497,19 +522,144 @@ test('public tournament stats tab shows leaderboard filters and applies stats se
     $this->get(route('tournaments.show', [
         'tournament' => $tournament,
         'tab' => 'mvp',
-        'gender' => 'women',
     ]))
         ->assertOk()
-        ->assertSee('Division')
-        ->assertSee('Mixed')
-        ->assertSee('Mix (Women)')
-        ->assertSee('Name')
-        ->assertSee('Team')
-        ->assertSee('Gender')
-        ->assertSee('Lea Torres')
+        ->assertSee('Based on Round Robin games only.')
+        ->assertSee('Overall MVP Breakdown')
+        ->assertSee('Female MVP Breakdown')
+        ->assertSee('Rank')
+        ->assertSee('Total')
         ->assertSee('Mika Javier')
+        ->assertSee('Lea Torres')
+        ->assertSee('bg-yellow-100', false)
+        ->assertSee('bg-zinc-100', false)
+        ->assertSee('Top 1', false)
+        ->assertSee('Top 2', false)
         ->assertDontSee('Marco Santos')
         ->assertDontSee('Paolo Reyes');
+});
+
+test('public tournament mvp tab supports search team filters and pagination', function () {
+    $organizer = User::factory()->admin()->create();
+    $owner = User::factory()->create();
+
+    $tournament = Tournament::query()->create([
+        'created_by' => $organizer->id,
+        'name' => 'MVP Filter Cup',
+        'slug' => 'mvp-filter-cup',
+        'venue' => 'North Field',
+        'starts_at' => now()->addWeek(),
+        'ends_at' => now()->addWeek()->addDay(),
+        'status' => 'live',
+        'city' => 'Quezon City',
+        'country_name' => 'Philippines',
+        'timezone' => 'Asia/Manila',
+        'division' => 'Open',
+        'is_public' => true,
+    ]);
+
+    $homeTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Alpha Stack',
+        'address' => 'Quezon City',
+        'city' => 'Quezon City',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    $awayTeam = Team::query()->create([
+        'owner_user_id' => $owner->id,
+        'name' => 'Beta Cup',
+        'address' => 'Makati City',
+        'city' => 'Makati',
+        'country_name' => 'Philippines',
+        'status' => 'active',
+    ]);
+
+    $homeRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $homeTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $awayRegistration = TournamentRegistration::query()->create([
+        'tournament_id' => $tournament->id,
+        'team_id' => $awayTeam->id,
+        'status' => 'approved',
+    ]);
+
+    $match = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'status' => 'completed',
+        'home_score' => 15,
+        'away_score' => 12,
+    ]);
+
+    foreach (range(1, 16) as $index) {
+        $member = TeamMember::query()->create([
+            'team_id' => $homeTeam->id,
+            'name' => sprintf('RR Player %02d', $index),
+            'gender' => 'Male',
+            'role' => 'player',
+        ]);
+
+        MatchPlayerStat::query()->create([
+            'match_id' => $match->id,
+            'team_member_id' => $member->id,
+            'goals' => 17 - $index,
+            'assists' => 0,
+            'blocks' => 0,
+        ]);
+    }
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'mvp',
+    ]))
+        ->assertOk()
+        ->assertSee('Search player...')
+        ->assertSee('RR Player 01')
+        ->assertSee('RR Player 15')
+        ->assertDontSee('RR Player 16')
+        ->assertSee('page=2');
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'mvp',
+        'search' => 'RR Player 16',
+    ]))
+        ->assertOk()
+        ->assertSee('RR Player 16')
+        ->assertDontSee('RR Player 01');
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'mvp',
+        'team' => $homeRegistration->id,
+        'search' => 'missing',
+    ]))
+        ->assertOk()
+        ->assertSee('Showing MVP breakdown for team:')
+        ->assertSee('Alpha Stack')
+        ->assertSee('matching “missing”')
+        ->assertSee('No MVP results found for the selected filters.');
+
+    $this->get(route('tournaments.show', [
+        'tournament' => $tournament,
+        'tab' => 'mvp',
+        'team' => $homeRegistration->id,
+        'search' => 'RR Player 01',
+        'gender' => 'men',
+        'page' => 2,
+    ]))
+        ->assertOk()
+        ->assertSee('Showing MVP breakdown for team:')
+        ->assertSee('Alpha Stack')
+        ->assertSee('— Men')
+        ->assertSee('matching “RR Player 01”');
 });
 
 test('public tournament stats tab paginates leaderboard results', function () {
@@ -961,6 +1111,28 @@ test('public tournament detail exposes the added tournament tabs', function () {
         'blocks' => 0,
     ]);
 
+    $roundRobinMatch = TournamentMatch::query()->create([
+        'tournament_id' => $tournament->id,
+        'pitch_id' => $pitch->id,
+        'home_registration_id' => $homeRegistration->id,
+        'away_registration_id' => $awayRegistration->id,
+        'stage' => 'round_robin',
+        'round_label' => 'RR1',
+        'match_number' => 5,
+        'scheduled_at' => now()->subHours(3),
+        'status' => 'completed',
+        'home_score' => 12,
+        'away_score' => 10,
+    ]);
+
+    MatchPlayerStat::query()->create([
+        'match_id' => $roundRobinMatch->id,
+        'team_member_id' => $homeCaptain->id,
+        'goals' => 4,
+        'assists' => 2,
+        'blocks' => 1,
+    ]);
+
     TournamentCrew::query()->create([
         'tournament_id' => $tournament->id,
         'category' => 'Tournament Admins',
@@ -980,16 +1152,18 @@ test('public tournament detail exposes the added tournament tabs', function () {
     $this->get(route('tournaments.show', ['tournament' => $tournament, 'tab' => 'spirit']))
         ->assertOk()
         ->assertSee('Average Spirit Score of Each Team')
-        ->assertSee('Games Rated')
-        ->assertSee('Avg')
-        ->assertSee('Rules')
-        ->assertSee('Comm.')
+        ->assertSee('Average Spirit Score = Total Spirit Score ÷ Total Games Played')
+        ->assertSee('Total Spirit Score')
+        ->assertSee('Total Games Played')
+        ->assertSee('Average Spirit Score')
         ->assertSee('Wave Breakers')
         ->assertSee('Sky Raiders')
         ->assertSeeInOrder([
             'Wave Breakers',
             'Sky Raiders',
         ])
+        ->assertSee('15.00')
+        ->assertSee('11.00')
         ->assertSee('wire:navigate.preserve-scroll', false);
 
     $this->get(route('tournaments.show', [
@@ -1044,12 +1218,13 @@ test('public tournament detail exposes the added tournament tabs', function () {
 
     $this->get(route('tournaments.show', ['tournament' => $tournament, 'tab' => 'mvp']))
         ->assertOk()
-        ->assertSee('Division')
-        ->assertSee('Name')
-        ->assertSee('Team')
-        ->assertSee('Gender')
+        ->assertSee('Based on Round Robin games only.')
+        ->assertSee('Overall MVP Breakdown')
+        ->assertSee('Rank')
+        ->assertSee('Total')
         ->assertSee('Toni Captain')
-        ->assertSee('Sky Raiders');
+        ->assertSee('Sky Raiders')
+        ->assertDontSee('Ina Spirit');
 
     $this->get(route('tournaments.show', ['tournament' => $tournament, 'tab' => 'standings']))
         ->assertOk()
@@ -1087,9 +1262,9 @@ test('public tournament detail exposes the added tournament tabs', function () {
         ->assertOk()
         ->assertSee('Win vs Loss')
         ->assertSee('Points For vs Points Against')
-        ->assertSee('Wins: 2 (100.00%)')
-        ->assertSee('For: 24 (54.55%)')
-        ->assertSee('Against: 20 (45.45%)')
+        ->assertSee('Wins: 3 (100.00%)')
+        ->assertSee('For: 36 (54.55%)')
+        ->assertSee('Against: 30 (45.45%)')
         ->assertSee('Wave Breakers')
         ->assertSee('GROUP GAME')
         ->assertSee('ENDED');
@@ -1638,8 +1813,8 @@ test('public schedule cards link to a public match detail page', function () {
         ->assertSee('Back to schedule')
         ->assertSee('Saigon Monsoon Ultimate')
         ->assertSee('Black Panthers')
-        ->assertSee('Summary')
         ->assertSee('Score Breakdown')
+        ->assertDontSee('>Summary<', false)
         ->assertSee('TOTAL SCORE')
         ->assertSee('BLOCKS')
         ->assertSee('ASSISTS')
@@ -1653,11 +1828,23 @@ test('public schedule cards link to a public match detail page', function () {
 
     $this->get(route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match, 'tab' => 'spirit']))
         ->assertOk()
-        ->assertSee('The tournament is still in progress.')
-        ->assertSee('Spirit Score');
+        ->assertDontSee('The tournament is still in progress. The organizer will display the Spirit Score once it concludes.')
+        ->assertSee('Spirit Score')
+        ->assertSee('No spirit score recorded yet.');
+
+    $this->get(route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match, 'tab' => 'summary']))
+        ->assertRedirect(route('tournaments.matches.show', [
+            'tournament' => $tournament,
+            'match' => $match,
+            'tab' => 'score-breakdown',
+        ]));
 
     $this->get(route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match, 'tab' => 'mvp']))
         ->assertOk()
-        ->assertSee('The tournament is still in progress.')
-        ->assertSee('MVP results');
+        ->assertDontSee('The tournament is still in progress. The organizer will display the MVP results once it concludes.')
+        ->assertSee('Winning Team MVP')
+        ->assertSee('Losing Team MVP')
+        ->assertSee('Le Ho Phat Tai – Saigon Monsoon Ultimate')
+        ->assertSee('Scores 3 · Assists 2 · Blocks 1 · Total 6')
+        ->assertSee('No player stats recorded yet.');
 });

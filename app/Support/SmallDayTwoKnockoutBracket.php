@@ -31,6 +31,23 @@ final class SmallDayTwoKnockoutBracket
     public const SCHEDULE_DATE_ISO = '2026-05-17';
 
     /**
+     * Championship-path feeder pairs for the public knockout tree (cross-over semis).
+     *
+     * @return list<array{0: int, 1: int}>
+     */
+    public static function championshipTreeFeederPairs(): array
+    {
+        return [
+            [37, 43],
+            [40, 43],
+            [38, 44],
+            [39, 44],
+            [43, 48],
+            [44, 48],
+        ];
+    }
+
+    /**
      * Alternate {@code matches.stage} values seen for Quarter Final rows (37–40).
      *
      * @return list<string>
