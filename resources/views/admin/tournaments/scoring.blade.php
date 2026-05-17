@@ -32,12 +32,14 @@
         $match->status === 'live' => __('This match is currently live. Scoring will be available after the match is completed.'),
         default => __('Score input is available only after the schedule marks this game as Completed.'),
     };
-    $homeStats = $match->playerStats
-        ->filter(fn ($stat) => $stat->teamMember?->team_id === $homeTeam?->id)
-        ->values();
-    $awayStats = $match->playerStats
-        ->filter(fn ($stat) => $stat->teamMember?->team_id === $awayTeam?->id)
-        ->values();
+    $matchScoreSheet = \App\Support\MatchScoreSheetContext::fromMatch($match);
+    $scoreSheetConfigs = $matchScoreSheet->scoreSheetConfigs;
+    $matchScoreInputState = $matchScoreSheet->matchScoreInputState;
+    $matchScoreMemberSides = $matchScoreSheet->matchScoreMemberSides;
+    $matchScorePreviewHome = $matchScoreSheet->matchScorePreviewHome;
+    $matchScorePreviewAway = $matchScoreSheet->matchScorePreviewAway;
+    $homeStats = $scoreSheetConfigs->firstWhere('side', 'home')['stats'];
+    $awayStats = $scoreSheetConfigs->firstWhere('side', 'away')['stats'];
     $loggedAssistsCount = $match->scoreLogs->whereNotNull('assist_team_member_id')->count();
     $initialRegistrationId = (string) old('team_registration_id', $homeRegistration?->id);
     $initialScorerId = (string) old('team_member_id');
@@ -56,44 +58,6 @@
     };
     $spiritScoresByScoredTeamId = $spiritScoresByScoredTeamId ?? collect();
     $matchPdfExportIsFinal = $match->isCompletedMatchStatus();
-    $scoreSheetConfigs = [
-        ['team' => $homeTeam, 'stats' => $homeStats, 'totalScore' => $match->home_score ?? 0, 'side' => 'home', 'registration' => $homeRegistration],
-        ['team' => $awayTeam, 'stats' => $awayStats, 'totalScore' => $match->away_score ?? 0, 'side' => 'away', 'registration' => $awayRegistration],
-    ];
-    $matchScoreInputState = [];
-    $matchScoreMemberSides = [];
-
-    foreach ($scoreSheetConfigs as &$scoreSheetConfig) {
-        $statsByMember = $scoreSheetConfig['stats']->keyBy('team_member_id');
-        $scoreSheetConfig['statsByMember'] = $statsByMember;
-
-        foreach (($scoreSheetConfig['team']?->members ?? collect()) as $member) {
-            $memberId = (string) $member->id;
-            $registrationId = (string) ($scoreSheetConfig['registration']?->id ?? '');
-            $stat = $statsByMember->get($member->id);
-
-            $matchScoreInputState[$memberId] = [
-                'blocks' => old("scores.{$registrationId}.{$memberId}.blocks", $stat?->blocks ?? ''),
-                'assists' => old("scores.{$registrationId}.{$memberId}.assists", $stat?->assists ?? ''),
-                'scores' => old("scores.{$registrationId}.{$memberId}.scores", $stat?->goals ?? ''),
-            ];
-            $matchScoreMemberSides[$memberId] = $scoreSheetConfig['side'];
-        }
-    }
-    unset($scoreSheetConfig);
-
-    $matchScorePreviewHome = 0;
-    $matchScorePreviewAway = 0;
-    foreach ($matchScoreInputState as $memberId => $inputRow) {
-        $goals = $inputRow['scores'];
-        $goalTotal = $goals === '' || $goals === null ? 0 : (int) $goals;
-
-        if (($matchScoreMemberSides[$memberId] ?? null) === 'home') {
-            $matchScorePreviewHome += $goalTotal;
-        } elseif (($matchScoreMemberSides[$memberId] ?? null) === 'away') {
-            $matchScorePreviewAway += $goalTotal;
-        }
-    }
 @endphp
 
 <x-layouts::app :title="__('Game Score')">
@@ -359,96 +323,10 @@
                 @csrf
                 @method('PATCH')
 
-                <div class="grid gap-6 sm:grid-cols-2">
-                @foreach ($scoreSheetConfigs as $sheet)
-                    @php
-                        $sheetTeam = $sheet['team'];
-                        $sheetStatsByMember = $sheet['stats']->keyBy('team_member_id');
-                        $sheetMembers = $sheetTeam?->members ?? collect();
-                        $sheetGenderGroups = \App\Support\MatchScoreSheetRosterGroups::fromMembers($sheetMembers);
-                    @endphp
-
-                    <section class="overflow-hidden rounded-xl border border-neutral-300 bg-white text-zinc-900 shadow-sm dark:border-neutral-700 dark:bg-zinc-900 dark:text-zinc-100">
-                        <table class="w-full border-collapse text-sm">
-                            <thead>
-                                <tr class="border-b border-neutral-300 dark:border-neutral-700">
-                                    <th colspan="4" class="border-r border-neutral-300 px-3 py-2 text-center text-base font-semibold uppercase tracking-wide dark:border-neutral-700">
-                                        {{ $sheetTeam?->name ?: ($sheet['side'] === 'home' ? __('Home Team') : __('Away Team')) }}
-                                    </th>
-                                    <th class="px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide">
-                                        <div>{{ __('TOTAL SCORE') }}</div>
-                                        <div class="mt-1 text-2xl font-bold tracking-tight" x-text="{{ $sheet['side'] === 'home' ? 'homeScore' : 'awayScore' }}">{{ $sheet['totalScore'] }}</div>
-                                    </th>
-                                </tr>
-                                <tr class="border-b border-neutral-300 bg-yellow-200 text-zinc-900 dark:border-neutral-700 dark:bg-yellow-300 dark:text-zinc-900">
-                                    <th class="w-10 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">#</th>
-                                    <th class="border-r border-neutral-300 px-3 py-1.5 text-center text-xs font-bold uppercase">{{ __('NAMES') }}</th>
-                                    <th class="w-20 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('BLOCKS') }}</th>
-                                    <th class="w-20 border-r border-neutral-300 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('ASSISTS') }}</th>
-                                    <th class="w-20 px-2 py-1.5 text-center text-xs font-bold uppercase">{{ __('SCORES') }}</th>
-                                </tr>
-                            </thead>
-
-                            <tbody>
-                                @foreach ($sheetGenderGroups as $group)
-                                    <tr class="border-b border-neutral-300 bg-zinc-50 dark:border-neutral-700 dark:bg-zinc-950">
-                                        <td colspan="5" class="px-3 py-1 text-xs font-semibold italic uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
-                                            {{ $group['label'] }}
-                                        </td>
-                                    </tr>
-
-                                    @foreach ($group['roster'] as $member)
-                                        @php
-                                            $stat = $sheetStatsByMember->get($member->id);
-                                        @endphp
-                                        <tr class="border-b border-neutral-200 last:border-b-0 dark:border-neutral-800">
-                                            <td class="w-10 border-r border-neutral-200 px-2 py-1 text-center text-xs text-zinc-500 dark:border-neutral-800 dark:text-zinc-400">
-                                                {{ $loop->iteration }}
-                                            </td>
-                                            <td class="border-r border-neutral-200 px-3 py-1 text-sm italic text-zinc-800 dark:border-neutral-800 dark:text-zinc-100">
-                                                {{ $member->name }}
-                                            </td>
-                                            <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    max="999"
-                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][blocks]"
-                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.blocks', $stat?->blocks ?? '') }}"
-                                                    x-on:input="handleInput('{{ $member->id }}', 'blocks', $event.target.value)"
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
-                                                >
-                                            </td>
-                                            <td class="w-20 border-r border-neutral-200 px-1 py-0.5 text-center dark:border-neutral-800">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    max="999"
-                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][assists]"
-                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.assists', $stat?->assists ?? '') }}"
-                                                    x-on:input="handleInput('{{ $member->id }}', 'assists', $event.target.value)"
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
-                                                >
-                                            </td>
-                                            <td class="w-20 px-1 py-0.5 text-center">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    max="999"
-                                                    name="scores[{{ $sheet['registration']?->id }}][{{ $member->id }}][scores]"
-                                                    value="{{ old('scores.'.($sheet['registration']?->id).'.'.$member->id.'.scores', $stat?->goals ?? '') }}"
-                                                    x-on:input="handleInput('{{ $member->id }}', 'scores', $event.target.value)"
-                                                    class="h-7 w-full rounded border border-transparent bg-transparent px-1 py-0 text-center text-sm text-zinc-900 transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none dark:text-zinc-100 dark:focus:border-neutral-500 dark:focus:bg-zinc-950"
-                                                >
-                                            </td>
-                                        </tr>
-                                    @endforeach
-                                @endforeach
-                            </tbody>
-                        </table>
-                    </section>
-                @endforeach
-                </div>
+                @include('shared.partials.match-score-sheet-panel', [
+                    'scoreSheetConfigs' => $scoreSheetConfigs,
+                    'readonly' => false,
+                ])
 
                 <div class="flex justify-end">
                     <button

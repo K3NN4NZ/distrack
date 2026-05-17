@@ -1640,7 +1640,10 @@ test('public schedule cards link to a public match detail page', function () {
         ->assertSee('Black Panthers')
         ->assertSee('Summary')
         ->assertSee('Score Breakdown')
-        ->assertSee('1 - 0');
+        ->assertSee('TOTAL SCORE')
+        ->assertSee('BLOCKS')
+        ->assertSee('ASSISTS')
+        ->assertSee('SCORES');
 
     $this->get(route('tournaments.matches.show', ['tournament' => $tournament, 'match' => $match, 'tab' => 'stats']))
         ->assertOk()

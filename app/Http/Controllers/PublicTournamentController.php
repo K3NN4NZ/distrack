@@ -6,6 +6,7 @@ use App\Models\MatchSpiritScore;
 use App\Models\Team;
 use App\Models\Tournament;
 use App\Models\TournamentMatch;
+use App\Support\MatchScoreSheetContext;
 use App\Support\SmallFixedRoundRobinDayOneSchedule;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -2213,18 +2214,7 @@ class PublicTournamentController extends Controller
             ],
         ];
 
-        $scoreBreakdown = $match->scoreLogs
-            ->map(function ($log) use ($match): array {
-                $isHomeScore = $log->team_registration_id === $match->home_registration_id;
-
-                return [
-                    'is_home_score' => $isHomeScore,
-                    'minute' => $log->minute,
-                    'score' => $log->home_score.' - '.$log->away_score,
-                    'scorer' => $log->scorer?->name ?: $log->registration?->team?->name,
-                    'assister' => $log->assister?->name,
-                ];
-            });
+        $matchScoreSheet = MatchScoreSheetContext::fromMatch($match);
 
         $comparisonRows = collect([
             [
@@ -2286,7 +2276,7 @@ class PublicTournamentController extends Controller
             'mvpCandidates' => $mvpCandidates,
             'teamLeadership' => $teamLeadership,
             'teamSummaries' => $teamSummaries,
-            'scoreBreakdown' => $scoreBreakdown,
+            'matchScoreSheet' => $matchScoreSheet,
             'comparisonRows' => $comparisonRows,
             'resultsLocked' => $tournament->status !== 'completed',
             'backLink' => route('tournaments.show', array_filter([

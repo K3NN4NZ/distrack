@@ -36,7 +36,7 @@ use RuntimeException;
  */
 class RoundRobinDay1ScheduleSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 1;
+    public const TOURNAMENT_ID = 9;
 
     /** When true, clears home_score, away_score and sets status scheduled for all Day 1 tracked games 1–24 before upsert. */
     public bool $clearDayOneResults = false;

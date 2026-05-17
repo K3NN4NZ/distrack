@@ -18,7 +18,7 @@ class TournamentOneRegistrationSeedingSeeder extends Seeder
      */
     public function run(): void
     {
-        $tournamentId = 1;
+        $tournamentId = 9;
 
         if (! Tournament::query()->whereKey($tournamentId)->exists()) {
             if ($this->command !== null) {

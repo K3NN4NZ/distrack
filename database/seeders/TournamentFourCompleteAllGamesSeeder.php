@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\DB;
  */
 final class TournamentFourCompleteAllGamesSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 1;
+    public const TOURNAMENT_ID = 9;
 
     public function run(): void
     {

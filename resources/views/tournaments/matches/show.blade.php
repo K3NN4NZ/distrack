@@ -278,51 +278,16 @@
                     Score Breakdown
                 </div>
 
-                @if ($scoreBreakdown->isNotEmpty())
-                    <div class="divide-y divide-zinc-200">
-                        @foreach ($scoreBreakdown as $row)
-                            <div class="grid grid-cols-[minmax(0,1fr)_9rem_minmax(0,1fr)] items-center gap-4 px-5 py-4">
-                                <div class="min-h-14 text-left">
-                                    @if ($row['is_home_score'])
-                                        <div class="flex items-start gap-3">
-                                            @if ($row['minute'])
-                                                <div class="pt-1 text-sm text-zinc-500">{{ $row['minute'] }}'</div>
-                                            @endif
-                                            <div>
-                                                <div class="font-semibold text-zinc-900">{{ $row['scorer'] }}</div>
-                                                @if ($row['assister'])
-                                                    <div class="text-sm text-zinc-600">{{ $row['assister'] }}</div>
-                                                @endif
-                                            </div>
-                                        </div>
-                                    @endif
-                                </div>
-
-                                <div class="text-center text-4xl font-semibold tracking-tight text-zinc-900">
-                                    {{ $row['score'] }}
-                                </div>
-
-                                <div class="min-h-14 text-right">
-                                    @unless ($row['is_home_score'])
-                                        <div class="flex items-start justify-end gap-3">
-                                            <div>
-                                                <div class="font-semibold text-zinc-900">{{ $row['scorer'] }}</div>
-                                                @if ($row['assister'])
-                                                    <div class="text-sm text-zinc-600">{{ $row['assister'] }}</div>
-                                                @endif
-                                            </div>
-                                            @if ($row['minute'])
-                                                <div class="pt-1 text-sm text-zinc-500">{{ $row['minute'] }}'</div>
-                                            @endif
-                                        </div>
-                                    @endunless
-                                </div>
-                            </div>
-                        @endforeach
+                @if ($matchScoreSheet->hasPublishedScoreSheet())
+                    <div class="p-6">
+                        @include('shared.partials.match-score-sheet-panel', [
+                            'scoreSheetConfigs' => $matchScoreSheet->scoreSheetConfigs,
+                            'readonly' => true,
+                        ])
                     </div>
                 @else
                     <div class="px-6 py-10 text-center text-lg text-zinc-500">
-                        No scoring breakdown has been published for this match yet.
+                        No score sheet available yet.
                     </div>
                 @endif
             </section>

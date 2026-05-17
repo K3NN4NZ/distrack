@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\DB;
  */
 final class TournamentOneAllGamesCompletedScoreSeeder extends Seeder
 {
-    public const TOURNAMENT_ID = 1;
+    public const TOURNAMENT_ID = 9;
 
     private const NOTES_SPIRIT = 'Seeded by TournamentOneAllGamesCompletedScoreSeeder';
 

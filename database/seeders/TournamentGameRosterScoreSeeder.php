@@ -44,7 +44,7 @@ class TournamentGameRosterScoreSeeder extends Seeder
     /**
      * Tournament to seed (default {@code 1} per project convention).
      */
-    public int $tournamentId = 1;
+    public int $tournamentId = 9;
 
     /**
      * Maximum goals per side when the match has no final {@code home_score}/{@code away_score} yet.
